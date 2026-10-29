@@ -77,15 +77,21 @@ async def _async_register_frontend(hass: HomeAssistant) -> None:
 
     if os.path.exists(card_path):
         try:
-            await hass.http.async_register_static_paths([
-                hass.http.StaticPathConfig(card_url, card_path, cache_headers=False)
-            ])
-        except AttributeError:
-            # Fallback for older Home Assistant versions
-            hass.http.register_static_path(card_url, card_path, cache_headers=False)
+            try:
+                from homeassistant.components.http import StaticPathConfig
+                await hass.http.async_register_static_paths([
+                    StaticPathConfig(card_url, card_path, cache_headers=False)
+                ])
+            except (ImportError, AttributeError):
+                if hasattr(hass.http, "register_static_path"):
+                    hass.http.register_static_path(card_url, card_path, cache_headers=False)
+                else:
+                    _LOGGER.warning("Could not register static path for SplitFlap card.")
 
-        add_extra_js_url(hass, card_url)
-        _LOGGER.debug("Registered SplitFlap card at %s", card_url)
+            add_extra_js_url(hass, card_url)
+            _LOGGER.debug("Registered SplitFlap card at %s", card_url)
+        except Exception as err:
+            _LOGGER.warning("Could not auto-register SplitFlap frontend card: %s", err)
 
     hass.data[DOMAIN]["_frontend_registered"] = True
 
