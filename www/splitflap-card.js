@@ -342,14 +342,18 @@ class SplitFlapCard extends HTMLElement {
   }
 }
 
-// Register custom card with Lovelace
-customElements.define('splitflap-card', SplitFlapCard);
+// Register custom card with Lovelace safely (prevent duplicate registration errors)
+if (!customElements.get('splitflap-card')) {
+  customElements.define('splitflap-card', SplitFlapCard);
+}
 
 // Lovelace Card Picker helper
 window.customCards = window.customCards || [];
-window.customCards.push({
-  type: 'splitflap-card',
-  name: 'SplitFlap Display Card',
-  description: 'Interactive controller and split-flap tile viewer for ESP32 SplitFlap displays.',
-  preview: true,
-});
+if (!window.customCards.some((c) => c.type === 'splitflap-card')) {
+  window.customCards.push({
+    type: 'splitflap-card',
+    name: 'SplitFlap Display Card',
+    description: 'Interactive controller and split-flap tile viewer for ESP32 SplitFlap displays.',
+    preview: true,
+  });
+}
