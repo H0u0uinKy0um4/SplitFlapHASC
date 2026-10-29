@@ -84,3 +84,42 @@ attribute.)*
 | `<prefix>/command/display` | HA &rarr; ESP32 | `{"text":"HELLO"}` | Send string to display |
 | `<prefix>/command/sync` | HA &rarr; ESP32 | `{"action":"fetch_state"}` | Request module and status report |
 | `<prefix>/command/scan` | HA &rarr; ESP32 | `{"action":"scan"}` | Trigger RS485 address scan |
+
+---
+
+## Troubleshooting
+
+### `Platform mqtt does not generate unique IDs`
+
+This warning means two retained MQTT discovery payloads share the same
+`unique_id`. Older SplitFlap firmware published a second discovery config to
+`homeassistant/device/splflp_master/config` using the same
+`splflp_master_status` ID as `homeassistant/sensor/splflp_master_status/config`.
+
+The current firmware deletes the obsolete retained topic on every MQTT connect
+and disables firmware-side discovery by default, because this integration owns
+all entities. Flash the updated firmware, then remove the leftover entity once:
+
+1. Delete the retained discovery topics in your broker (replace the credentials):
+
+   ```bash
+   mosquitto_pub -h <broker> -u <user> -P <password> \
+     -r -n -t "homeassistant/device/splflp_master/config"
+   mosquitto_pub -h <broker> -u <user> -P <password> \
+     -r -n -t "homeassistant/sensor/splflp_master_status/config"
+   ```
+
+   The `-r -n` combination publishes an empty retained payload, which removes
+   the retained message.
+
+2. In Home Assistant, go to **Settings &rarr; Devices & Services &rarr; Entities**,
+   filter for `splflpmaster_status` or `splitflap_status`, and delete any orphaned
+   entity that is no longer provided by the integration.
+
+3. Restart Home Assistant. The integration's entities
+   (`sensor.splitflap_master_status`, `sensor.splitflap_detected_modules` and one
+   `sensor.splitflap_module_<id>` per module) are now the only SplitFlap entities.
+
+To use firmware-side discovery *without* the integration, add
+`-DSPLFLAP_ENABLE_MQTT_DISCOVERY=1` to `build_flags` in the master firmware's
+`platformio.ini`.

@@ -151,8 +151,14 @@ class SplitFlapCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             if isinstance(raw_modules, (list, dict)):
                 modules = normalize_modules(raw_modules)
                 new_data["modules"] = modules
-                new_data["modules_count"] = _coerce_count(
+                # Prefer the real number of reported modules over the count
+                # field, which can be stale in older firmware. Only fall back
+                # to the count when no module details were provided.
+                reported_count = _coerce_count(
                     payload.get("modules_count"), len(modules)
+                )
+                new_data["modules_count"] = (
+                    len(modules) if modules else reported_count
                 )
             else:
                 _LOGGER.warning(
