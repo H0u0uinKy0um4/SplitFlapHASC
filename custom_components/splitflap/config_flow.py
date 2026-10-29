@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from typing import Any
+
 import voluptuous as vol
 
 from homeassistant import config_entries
@@ -53,15 +54,11 @@ class SplitFlapConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         config_entry: config_entries.ConfigEntry,
     ) -> config_entries.OptionsFlow:
         """Get the options flow for this handler."""
-        return SplitFlapOptionsFlowHandler(config_entry)
+        return SplitFlapOptionsFlowHandler()
 
 
 class SplitFlapOptionsFlowHandler(config_entries.OptionsFlow):
     """Handle SplitFlap options."""
-
-    def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
-        """Initialize options flow."""
-        self._config_entry = config_entry
 
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
@@ -70,11 +67,17 @@ class SplitFlapOptionsFlowHandler(config_entries.OptionsFlow):
         errors: dict[str, str] = {}
 
         if user_input is not None:
-            return self.async_create_entry(title="", data=user_input)
+            topic_prefix = user_input[CONF_TOPIC_PREFIX].strip().rstrip("/")
+            if not topic_prefix:
+                errors[CONF_TOPIC_PREFIX] = "invalid_topic_prefix"
+            else:
+                return self.async_create_entry(
+                    title="", data={CONF_TOPIC_PREFIX: topic_prefix}
+                )
 
-        current_prefix = self._config_entry.options.get(
+        current_prefix = self.config_entry.options.get(
             CONF_TOPIC_PREFIX,
-            self._config_entry.data.get(CONF_TOPIC_PREFIX, DEFAULT_TOPIC_PREFIX),
+            self.config_entry.data.get(CONF_TOPIC_PREFIX, DEFAULT_TOPIC_PREFIX),
         )
 
         schema = vol.Schema(

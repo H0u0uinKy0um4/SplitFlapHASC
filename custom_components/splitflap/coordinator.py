@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import Any
 
 from homeassistant.components import mqtt
@@ -16,6 +17,47 @@ from .const import CONF_TOPIC_PREFIX, DEFAULT_NAME, DEFAULT_TOPIC_PREFIX, DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
 
+_NUMERIC_ID = re.compile(r"^\d+$")
+
+
+def module_sort_key(module_id: Any) -> tuple[int, int | str]:
+    """Return a stable, natural sort key for a module id."""
+    value = str(module_id).strip()
+    if _NUMERIC_ID.match(value):
+        return (0, int(value))
+    return (1, value.casefold())
+
+
+def normalize_modules(raw_modules: Any) -> dict[str, dict[str, Any]]:
+    """Normalize the different module payload shapes into an id -> module map."""
+    modules: dict[str, dict[str, Any]] = {}
+
+    if isinstance(raw_modules, list):
+        for item in raw_modules:
+            if not isinstance(item, dict) or item.get("id") is None:
+                continue
+            module = dict(item)
+            module["id"] = item["id"]
+            modules[str(item["id"])] = module
+    elif isinstance(raw_modules, dict):
+        for module_id, item in raw_modules.items():
+            if isinstance(item, dict):
+                module = dict(item)
+            else:
+                module = {"id": module_id, "flap": item}
+            module.setdefault("id", module_id)
+            modules[str(module_id)] = module
+
+    return modules
+
+
+def _coerce_count(value: Any, fallback: int) -> int:
+    """Coerce a module count to a non-negative integer."""
+    try:
+        return max(int(value), 0)
+    except (TypeError, ValueError):
+        return max(fallback, 0)
+
 
 class SplitFlapCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     """Class to manage fetching SplitFlap data over MQTT."""
@@ -24,7 +66,10 @@ class SplitFlapCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         """Initialize the SplitFlap coordinator."""
         self.entry = entry
         self.prefix = (
-            entry.options.get(CONF_TOPIC_PREFIX, entry.data.get(CONF_TOPIC_PREFIX, DEFAULT_TOPIC_PREFIX))
+            entry.options.get(
+                CONF_TOPIC_PREFIX,
+                entry.data.get(CONF_TOPIC_PREFIX, DEFAULT_TOPIC_PREFIX),
+            )
             .strip()
             .rstrip("/")
         )
@@ -49,13 +94,17 @@ class SplitFlapCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     @property
     def device_info(self) -> DeviceInfo:
         """Return device info for SplitFlap."""
-        name = DEFAULT_NAME if self.prefix == DEFAULT_TOPIC_PREFIX else f"{DEFAULT_NAME} {self.prefix}"
+        name = (
+            DEFAULT_NAME
+            if self.prefix == DEFAULT_TOPIC_PREFIX
+            else f"{DEFAULT_NAME} {self.prefix}"
+        )
         return DeviceInfo(
             identifiers={(DOMAIN, self.entry.entry_id)},
             name=name,
             manufacturer="DIY",
             model="ESP32-C3 RS485 Master",
-            sw_version="1.0",
+            sw_version="1.1",
         )
 
     async def async_setup(self) -> None:
@@ -67,37 +116,59 @@ class SplitFlapCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             """Handle received MQTT messages."""
             try:
                 payload = json.loads(msg.payload)
-                if not isinstance(payload, dict):
-                    _LOGGER.warning("MQTT payload is not a JSON object: %s", msg.payload)
-                    return
-
-                new_data = dict(self.data)
-                new_data["status"] = payload.get("state", "online")
-                new_data["modules_count"] = payload.get("modules_count", 0)
-                if "text" in payload:
-                    new_data["last_message"] = payload["text"]
-
-                raw_modules = payload.get("modules", [])
-                if isinstance(raw_modules, list):
-                    new_data["modules"] = {
-                        str(m.get("id")): m for m in raw_modules if isinstance(m, dict) and "id" in m
-                    }
-                elif isinstance(raw_modules, dict):
-                    new_data["modules"] = raw_modules
-
-                self.async_set_updated_data(new_data)
-                _LOGGER.debug("SplitFlap state updated: %s", new_data)
-
-                # Reset 60s inactivity timer
-                self._reset_offline_timer()
-            except json.JSONDecodeError:
+            except (json.JSONDecodeError, UnicodeDecodeError):
                 _LOGGER.error("Failed to decode MQTT JSON payload: %s", msg.payload)
+                return
 
-        self._mqtt_unsub = await mqtt.async_subscribe(self.hass, status_topic, message_received)
+            if not isinstance(payload, dict):
+                _LOGGER.warning("MQTT payload is not a JSON object: %s", msg.payload)
+                return
+
+            self._handle_status_payload(payload)
+
+        self._mqtt_unsub = await mqtt.async_subscribe(
+            self.hass, status_topic, message_received
+        )
         _LOGGER.info("Subscribed to SplitFlap status on %s", status_topic)
 
         # Trigger initial sync request to get the display current status
         await self.fetch_esp32_data()
+
+    @callback
+    def _handle_status_payload(self, payload: dict[str, Any]) -> None:
+        """Merge a status payload into the coordinator data."""
+        new_data = dict(self.data)
+
+        if "state" in payload:
+            state = payload["state"]
+            new_data["status"] = str(state) if state is not None else "online"
+
+        if "text" in payload and isinstance(payload["text"], str):
+            new_data["last_message"] = payload["text"]
+
+        if "modules" in payload:
+            raw_modules = payload["modules"]
+            if isinstance(raw_modules, (list, dict)):
+                modules = normalize_modules(raw_modules)
+                new_data["modules"] = modules
+                new_data["modules_count"] = _coerce_count(
+                    payload.get("modules_count"), len(modules)
+                )
+            else:
+                _LOGGER.warning(
+                    "Ignoring invalid modules payload from SplitFlap: %s",
+                    raw_modules,
+                )
+        elif "modules_count" in payload:
+            new_data["modules_count"] = _coerce_count(
+                payload["modules_count"], new_data.get("modules_count", 0)
+            )
+
+        self.async_set_updated_data(new_data)
+        _LOGGER.debug("SplitFlap state updated: %s", new_data)
+
+        # Reset 60s inactivity timer
+        self._reset_offline_timer()
 
     @callback
     def _reset_offline_timer(self) -> None:
@@ -110,10 +181,12 @@ class SplitFlapCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         def _handle_timeout(_now) -> None:
             """Mark coordinator status as offline after timeout."""
             _LOGGER.warning(
-                "No MQTT message received from SplitFlap (%s) for %s seconds. Marking offline.",
+                "No MQTT message received from SplitFlap (%s) for %s seconds. "
+                "Marking offline.",
                 self.prefix,
                 self._offline_timeout_seconds,
             )
+            self._offline_timer = None
             data = dict(self.data)
             data["status"] = "offline"
             self.async_set_updated_data(data)
@@ -135,21 +208,21 @@ class SplitFlapCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     async def send_text(self, text: str) -> None:
         """Send a display text command to the ESP32."""
+        text = str(text)
+
         # Optimistically update last_message and module flap characters
         updated = dict(self.data)
         updated["last_message"] = text
 
-        upper_text = text.upper()
-        if "modules" in updated and isinstance(updated["modules"], dict):
-            new_modules = {}
-            sorted_keys = sorted(
-                updated["modules"].keys(),
-                key=lambda k: int(k) if str(k).isdigit() else str(k),
-            )
-            for idx, mod_id in enumerate(sorted_keys):
-                mod_data = dict(updated["modules"][mod_id]) if isinstance(updated["modules"][mod_id], dict) else {}
-                mod_data["flap"] = upper_text[idx] if idx < len(upper_text) else " "
-                new_modules[mod_id] = mod_data
+        modules = updated.get("modules")
+        if isinstance(modules, dict) and modules:
+            new_modules: dict[str, dict[str, Any]] = {}
+            sorted_ids = sorted(modules, key=module_sort_key)
+            for index, module_id in enumerate(sorted_ids):
+                module = modules[module_id]
+                module_data = dict(module) if isinstance(module, dict) else {}
+                module_data["flap"] = text[index] if index < len(text) else ""
+                new_modules[module_id] = module_data
             updated["modules"] = new_modules
 
         self.async_set_updated_data(updated)
@@ -166,7 +239,7 @@ class SplitFlapCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         _LOGGER.info("Requested RS485 bus scan on %s", topic)
 
     async def fetch_esp32_data(self) -> None:
-        """Publish a request asking the ESP32 to report its current modules and sync."""
+        """Publish a request asking the ESP32 to report its current modules."""
         topic = f"{self.prefix}/command/sync"
         payload = json.dumps({"action": "fetch_state"})
         await mqtt.async_publish(self.hass, topic, payload)

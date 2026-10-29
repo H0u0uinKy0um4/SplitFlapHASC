@@ -24,6 +24,9 @@
           "topic_prefix": "MQTT Topic Prefix"
         }
       }
+    },
+    "error": {
+      "invalid_topic_prefix": "MQTT topic prefix cannot be empty."
     }
   }
 }
