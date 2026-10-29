@@ -42,9 +42,10 @@ class SplitFlapCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     @property
     def device_info(self) -> DeviceInfo:
         """Return device info for SplitFlap."""
+        name = DEFAULT_NAME if self.prefix == DEFAULT_TOPIC_PREFIX else f"{DEFAULT_NAME} {self.prefix}"
         return DeviceInfo(
             identifiers={(DOMAIN, self.entry.entry_id)},
-            name=f"SplitFlap ({self.prefix})",
+            name=name,
             manufacturer="DIY",
             model="ESP32-C3 RS485 Master",
             sw_version="1.0",

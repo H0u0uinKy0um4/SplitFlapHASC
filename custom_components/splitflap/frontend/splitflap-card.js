@@ -30,9 +30,19 @@ class SplitFlapCard extends HTMLElement {
     this.render();
   }
 
-  _resolveEntityId(primary, fallback) {
+  _resolveEntityId(primary, fallbackPattern) {
     if (this._hass && this._hass.states[primary]) return primary;
-    if (this._hass && fallback && this._hass.states[fallback]) return fallback;
+    if (this._hass && fallbackPattern && typeof fallbackPattern === 'string' && this._hass.states[fallbackPattern]) {
+      return fallbackPattern;
+    }
+    // Auto-discover dynamically from available entities in hass.states
+    if (this._hass && this._hass.states && fallbackPattern) {
+      const match = Object.keys(this._hass.states).find((id) => {
+        if (fallbackPattern instanceof RegExp) return fallbackPattern.test(id);
+        return id.includes(fallbackPattern);
+      });
+      if (match) return match;
+    }
     return primary;
   }
 
@@ -42,7 +52,11 @@ class SplitFlapCard extends HTMLElement {
     const val = input.value.trim();
     if (!val) return;
 
-    const textEntity = this._resolveEntityId(this._config.text_entity, 'text.splitflap_display_text');
+    const textEntity = this._resolveEntityId(this._config.text_entity, /text\..*(?:splitflap|display_text)/i);
+    if (!this._hass || !this._hass.states[textEntity]) {
+      console.warn(`[splitflap-card] Text entity '${textEntity}' not available in Home Assistant.`);
+      return;
+    }
     this._hass.callService('text', 'set_value', {
       entity_id: textEntity,
       value: val,
@@ -50,8 +64,13 @@ class SplitFlapCard extends HTMLElement {
     input.value = '';
   }
 
-  _pressButton(primary, fallback) {
-    const entity = this._resolveEntityId(primary, fallback);
+  _pressButton(primary, fallbackPattern) {
+    const entity = this._resolveEntityId(primary, fallbackPattern);
+    if (!this._hass) return;
+    if (!this._hass.states[entity]) {
+      console.warn(`[splitflap-card] Button entity '${entity}' not available in Home Assistant.`);
+      return;
+    }
     this._hass.callService('button', 'press', {
       entity_id: entity,
     });
@@ -60,11 +79,11 @@ class SplitFlapCard extends HTMLElement {
   render() {
     if (!this._hass || !this._config) return;
 
-    const textEntityId = this._resolveEntityId(this._config.text_entity, 'text.splitflap_display_text');
-    const statusEntityId = this._resolveEntityId(this._config.status_entity, 'sensor.splitflap_master_status');
-    const modulesEntityId = this._resolveEntityId(this._config.modules_sensor, 'sensor.splitflap_detected_modules');
-    const syncEntityId = this._resolveEntityId(this._config.sync_entity, 'button.splitflap_sync_modules');
-    const scanEntityId = this._resolveEntityId(this._config.scan_entity, 'button.splitflap_bus_scan');
+    const textEntityId = this._resolveEntityId(this._config.text_entity, /text\..*(?:splitflap|display_text)/i);
+    const statusEntityId = this._resolveEntityId(this._config.status_entity, /sensor\..*(?:master_status|status)/i);
+    const modulesEntityId = this._resolveEntityId(this._config.modules_sensor, /sensor\..*(?:detected_modules|modules)/i);
+    const syncEntityId = this._resolveEntityId(this._config.sync_entity, /button\..*(?:splitflap.*sync|sync)/i);
+    const scanEntityId = this._resolveEntityId(this._config.scan_entity, /button\..*(?:splitflap.*scan|scan)/i);
 
     const textState = this._hass.states[textEntityId];
     const statusState = this._hass.states[statusEntityId];
