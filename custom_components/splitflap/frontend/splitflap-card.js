@@ -345,24 +345,24 @@ class SplitFlapCard extends HTMLElement {
     const moduleKeys = Object.keys(modulesData || {});
     const upperText = (text !== undefined && text !== null) ? String(text).toUpperCase() : '';
 
-    // If hardware modules are detected, map the text onto each module
+    // If hardware modules are detected, map the text onto each physical module
     if (moduleKeys.length > 0) {
       const sortedKeys = moduleKeys.sort((a, b) => Number(a) - Number(b));
-      const tileCount = Math.max(sortedKeys.length, upperText.length);
+      const tileCount = sortedKeys.length;
 
       const tiles = [];
       for (let i = 0; i < tileCount; i++) {
         const char = i < upperText.length ? upperText[i] : ' ';
-        const modId = i < sortedKeys.length ? sortedKeys[i] : null;
-        const mod = modId ? modulesData[modId] : null;
-        const sublabel = modId ? `#${modId}` : '';
+        const modId = sortedKeys[i];
+        const mod = modulesData[modId];
+        const sublabel = `#${modId}`;
         const stateDesc = mod && mod.state ? mod.state : 'idle';
-        const title = modId ? `Module #${modId} (${stateDesc})` : 'Extra tile';
+        const title = `Module #${modId} (${stateDesc})`;
 
         tiles.push(`
           <div class="flap-tile" title="${title}">
             ${char === ' ' ? '&nbsp;' : char}
-            ${sublabel ? `<span class="module-sublabel">${sublabel}</span>` : ''}
+            <span class="module-sublabel">${sublabel}</span>
           </div>
         `);
       }

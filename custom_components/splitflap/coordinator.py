@@ -7,8 +7,9 @@ from typing import Any
 
 from homeassistant.components import mqtt
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
 from homeassistant.helpers.device_registry import DeviceInfo
+from homeassistant.helpers.event import async_call_later
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
 from .const import CONF_TOPIC_PREFIX, DEFAULT_NAME, DEFAULT_TOPIC_PREFIX, DOMAIN
@@ -42,6 +43,8 @@ class SplitFlapCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "last_message": "",
         }
         self._mqtt_unsub = None
+        self._offline_timer: CALLBACK_TYPE | None = None
+        self._offline_timeout_seconds: int = 60
 
     @property
     def device_info(self) -> DeviceInfo:
@@ -84,6 +87,9 @@ class SplitFlapCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
                 self.async_set_updated_data(new_data)
                 _LOGGER.debug("SplitFlap state updated: %s", new_data)
+
+                # Reset 60s inactivity timer
+                self._reset_offline_timer()
             except json.JSONDecodeError:
                 _LOGGER.error("Failed to decode MQTT JSON payload: %s", msg.payload)
 
@@ -93,8 +99,35 @@ class SplitFlapCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # Trigger initial sync request to get the display current status
         await self.fetch_esp32_data()
 
+    @callback
+    def _reset_offline_timer(self) -> None:
+        """Reset the offline timeout timer."""
+        if self._offline_timer is not None:
+            self._offline_timer()
+            self._offline_timer = None
+
+        @callback
+        def _handle_timeout(_now) -> None:
+            """Mark coordinator status as offline after timeout."""
+            _LOGGER.warning(
+                "No MQTT message received from SplitFlap (%s) for %s seconds. Marking offline.",
+                self.prefix,
+                self._offline_timeout_seconds,
+            )
+            data = dict(self.data)
+            data["status"] = "offline"
+            self.async_set_updated_data(data)
+
+        self._offline_timer = async_call_later(
+            self.hass, self._offline_timeout_seconds, _handle_timeout
+        )
+
     async def async_unload(self) -> None:
-        """Clean up MQTT subscription when component unloads."""
+        """Clean up MQTT subscription and timers when component unloads."""
+        if self._offline_timer is not None:
+            self._offline_timer()
+            self._offline_timer = None
+
         if self._mqtt_unsub:
             self._mqtt_unsub()
             self._mqtt_unsub = None
@@ -124,7 +157,7 @@ class SplitFlapCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         topic = f"{self.prefix}/command/display"
         payload = json.dumps({"text": text})
         await mqtt.async_publish(self.hass, topic, payload)
-        _LOGGER.debug("Published display command '%s' to %s", text, topic)
+        _LOGGER.info("Published display command '%s' to %s", text, topic)
 
     async def trigger_bus_scan(self) -> None:
         """Request the ESP32 to scan the RS485 bus."""
