@@ -1,0 +1,62 @@
+"""Button platform for SplitFlap."""
+from __future__ import annotations
+
+from homeassistant.components.button import ButtonEntity
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.update_coordinator import CoordinatorEntity
+
+from .const import DOMAIN
+from .coordinator import SplitFlapCoordinator
+
+
+async def async_setup_entry(
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+    async_add_entities: AddEntitiesCallback,
+) -> None:
+    """Set up SplitFlap button entities."""
+    coordinator: SplitFlapCoordinator = hass.data[DOMAIN][entry.entry_id]
+    async_add_entities(
+        [
+            SplitFlapSyncButton(coordinator),
+            SplitFlapScanButton(coordinator),
+        ]
+    )
+
+
+class SplitFlapSyncButton(CoordinatorEntity[SplitFlapCoordinator], ButtonEntity):
+    """Button to fetch current state and sync modules from ESP32."""
+
+    _attr_has_entity_name = True
+    _attr_name = "Sync"
+    _attr_icon = "mdi:sync"
+
+    def __init__(self, coordinator: SplitFlapCoordinator) -> None:
+        """Initialize the sync button."""
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{coordinator.prefix}_sync"
+        self._attr_device_info = coordinator.device_info
+
+    async def async_press(self) -> None:
+        """Trigger the fetch/sync command."""
+        await self.coordinator.fetch_esp32_data()
+
+
+class SplitFlapScanButton(CoordinatorEntity[SplitFlapCoordinator], ButtonEntity):
+    """Button to trigger an RS485 bus scan on the hardware."""
+
+    _attr_has_entity_name = True
+    _attr_name = "Scan"
+    _attr_icon = "mdi:radar"
+
+    def __init__(self, coordinator: SplitFlapCoordinator) -> None:
+        """Initialize the scan button."""
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{coordinator.prefix}_scan"
+        self._attr_device_info = coordinator.device_info
+
+    async def async_press(self) -> None:
+        """Handle the button press."""
+        await self.coordinator.trigger_bus_scan()

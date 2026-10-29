@@ -1,0 +1,19 @@
+send_text:
+  name: Send Text
+  description: Send a string to display on the SplitFlap modules.
+  fields:
+    text:
+      name: Text
+      description: The text string to send to the display.
+      required: true
+      example: "HELLO WORLD"
+      selector:
+        text:
+
+sync:
+  name: Sync Modules
+  description: Request current state and module info from ESP32 master.
+
+scan:
+  name: Scan Bus
+  description: Trigger an RS485 bus scan on the ESP32 master to discover modules.

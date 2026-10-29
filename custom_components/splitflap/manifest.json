@@ -1,0 +1,13 @@
+{
+  "domain": "splitflap",
+  "name": "SplitFlap",
+  "codeowners": ["@iuarchbtw"],
+  "config_flow": true,
+  "documentation": "https://github.com/iuarchbtw/SplitFlap",
+  "integration_type": "device",
+  "iot_class": "local_push",
+  "issue_tracker": "https://github.com/iuarchbtw/SplitFlap/issues",
+  "requirements": [],
+  "version": "1.0.0",
+  "dependencies": ["mqtt", "frontend", "http"]
+}

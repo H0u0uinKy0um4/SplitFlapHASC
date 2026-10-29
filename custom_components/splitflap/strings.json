@@ -1,0 +1,29 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connect SplitFlap Display",
+        "description": "Configure the MQTT topic prefix for your ESP32 SplitFlap controller.",
+        "data": {
+          "topic_prefix": "MQTT Topic Prefix"
+        }
+      }
+    },
+    "error": {
+      "invalid_topic_prefix": "MQTT topic prefix cannot be empty."
+    },
+    "abort": {
+      "already_configured": "A SplitFlap device with this topic prefix is already configured."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "SplitFlap Options",
+        "data": {
+          "topic_prefix": "MQTT Topic Prefix"
+        }
+      }
+    }
+  }
+}
