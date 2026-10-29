@@ -102,14 +102,28 @@ class SplitFlapCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     async def send_text(self, text: str) -> None:
         """Send a display text command to the ESP32."""
+        # Optimistically update last_message and module flap characters
+        updated = dict(self.data)
+        updated["last_message"] = text
+
+        upper_text = text.upper()
+        if "modules" in updated and isinstance(updated["modules"], dict):
+            new_modules = {}
+            sorted_keys = sorted(
+                updated["modules"].keys(),
+                key=lambda k: int(k) if str(k).isdigit() else str(k),
+            )
+            for idx, mod_id in enumerate(sorted_keys):
+                mod_data = dict(updated["modules"][mod_id]) if isinstance(updated["modules"][mod_id], dict) else {}
+                mod_data["flap"] = upper_text[idx] if idx < len(upper_text) else " "
+                new_modules[mod_id] = mod_data
+            updated["modules"] = new_modules
+
+        self.async_set_updated_data(updated)
+
         topic = f"{self.prefix}/command/display"
         payload = json.dumps({"text": text})
         await mqtt.async_publish(self.hass, topic, payload)
-
-        # Optimistically update last_message
-        updated = dict(self.data)
-        updated["last_message"] = text
-        self.async_set_updated_data(updated)
         _LOGGER.debug("Published display command '%s' to %s", text, topic)
 
     async def trigger_bus_scan(self) -> None:

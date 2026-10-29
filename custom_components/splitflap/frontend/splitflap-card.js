@@ -49,18 +49,25 @@ class SplitFlapCard extends HTMLElement {
   _sendText() {
     const input = this.shadowRoot.getElementById('textInput');
     if (!input) return;
-    const val = input.value.trim();
-    if (!val) return;
+    const val = input.value;
+    if (val === undefined || val === null) return;
+
+    // Immediately display the new text digitally without waiting for hardware response
+    this._optimisticText = val;
+    this.render();
 
     const textEntity = this._resolveEntityId(this._config.text_entity, /text\..*(?:splitflap|display_text)/i);
-    if (!this._hass || !this._hass.states[textEntity]) {
-      console.warn(`[splitflap-card] Text entity '${textEntity}' not available in Home Assistant.`);
-      return;
+    if (this._hass && this._hass.states[textEntity]) {
+      this._hass.callService('text', 'set_value', {
+        entity_id: textEntity,
+        value: val,
+      });
+    } else if (this._hass) {
+      // Fallback: call domain service if entity not found
+      this._hass.callService('splitflap', 'send_text', {
+        text: val,
+      });
     }
-    this._hass.callService('text', 'set_value', {
-      entity_id: textEntity,
-      value: val,
-    });
     input.value = '';
   }
 
@@ -89,7 +96,14 @@ class SplitFlapCard extends HTMLElement {
     const statusState = this._hass.states[statusEntityId];
     const modulesState = this._hass.states[modulesEntityId];
 
-    const currentText = textState ? textState.state : '';
+    let currentText = this._optimisticText !== undefined
+      ? this._optimisticText
+      : (textState ? textState.state : '');
+
+    if (this._optimisticText !== undefined && textState && textState.state === this._optimisticText) {
+      this._optimisticText = undefined;
+    }
+
     const masterStatus = statusState ? statusState.state : 'offline';
     const modulesCount = modulesState ? modulesState.state : '0';
     const modulesData = modulesState && modulesState.attributes && modulesState.attributes.modules
@@ -329,26 +343,34 @@ class SplitFlapCard extends HTMLElement {
 
   _generateFlapTilesHtml(text, modulesData) {
     const moduleKeys = Object.keys(modulesData || {});
+    const upperText = (text !== undefined && text !== null) ? String(text).toUpperCase() : '';
 
-    // If hardware modules are reported, show each module's flap
+    // If hardware modules are detected, map the text onto each module
     if (moduleKeys.length > 0) {
-      return moduleKeys
-        .sort((a, b) => Number(a) - Number(b))
-        .map((id) => {
-          const mod = modulesData[id];
-          const char = (mod && mod.flap !== undefined && mod.flap !== '') ? String(mod.flap) : ' ';
-          return `
-            <div class="flap-tile" title="Module #${id} (${mod ? mod.state : 'unknown'})">
-              ${char}
-              <span class="module-sublabel">#${id}</span>
-            </div>
-          `;
-        })
-        .join('');
+      const sortedKeys = moduleKeys.sort((a, b) => Number(a) - Number(b));
+      const tileCount = Math.max(sortedKeys.length, upperText.length);
+
+      const tiles = [];
+      for (let i = 0; i < tileCount; i++) {
+        const char = i < upperText.length ? upperText[i] : ' ';
+        const modId = i < sortedKeys.length ? sortedKeys[i] : null;
+        const mod = modId ? modulesData[modId] : null;
+        const sublabel = modId ? `#${modId}` : '';
+        const stateDesc = mod && mod.state ? mod.state : 'idle';
+        const title = modId ? `Module #${modId} (${stateDesc})` : 'Extra tile';
+
+        tiles.push(`
+          <div class="flap-tile" title="${title}">
+            ${char === ' ' ? '&nbsp;' : char}
+            ${sublabel ? `<span class="module-sublabel">${sublabel}</span>` : ''}
+          </div>
+        `);
+      }
+      return tiles.join('');
     }
 
-    // Fallback: render the text string character by character
-    const chars = (text && text.length > 0) ? text.toUpperCase().split('') : [' '];
+    // Fallback: render the text string character by character (or 4 empty tiles if text is empty)
+    const chars = upperText.length > 0 ? upperText.split('') : [' ', ' ', ' ', ' '];
     return chars
       .map(
         (c) => `<div class="flap-tile">${c === ' ' ? '&nbsp;' : c}</div>`
