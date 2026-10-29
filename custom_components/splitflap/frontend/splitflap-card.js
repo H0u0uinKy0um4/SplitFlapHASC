@@ -7,7 +7,7 @@
  * clicking a tile opens the normal Home Assistant more-info dialog.
  */
 
-const SPLITFLAP_CARD_VERSION = "1.1.0";
+const SPLITFLAP_CARD_VERSION = "1.2.0";
 const MODULE_ID_ATTR = "splitflap_module_id";
 const MODULE_PREFIX_ATTR = "splitflap_prefix";
 
@@ -331,6 +331,16 @@ class SplitFlapCard extends HTMLElement {
         hasFlap: attrs.flap !== undefined && attrs.flap !== null,
         state: String(attrs.module_state ?? stateObj.state ?? "unknown"),
         position: attrs.position,
+        currentStep:
+          attrs.current_step ?? attrs.currentStep ?? attrs.currentStepPos,
+        autoHoming: attrs.auto_homing ?? attrs.autoHoming ?? attrs.autoHome,
+        flapCount: Array.isArray(attrs.flap_list)
+          ? attrs.flap_list.length
+          : undefined,
+        mapCount:
+          attrs.map_of_positions && typeof attrs.map_of_positions === "object"
+            ? Object.keys(attrs.map_of_positions).length
+            : undefined,
       });
     }
 
@@ -929,8 +939,21 @@ class SplitFlapCard extends HTMLElement {
         module.position !== undefined && module.position !== null
           ? `, position ${module.position}`
           : "";
+      const detailParts = [];
+      if (module.currentStep !== undefined && module.currentStep !== null) {
+        detailParts.push(`step ${module.currentStep}`);
+      }
+      if (module.autoHoming !== undefined && module.autoHoming !== null) {
+        detailParts.push(`auto-home ${module.autoHoming ? "on" : "off"}`);
+      }
+      if (module.flapCount) detailParts.push(`${module.flapCount} flaps`);
+      if (module.mapCount) detailParts.push(`${module.mapCount} mapped`);
+      const detailText = detailParts.length
+        ? `, ${detailParts.join(", ")}`
+        : "";
       const entityText = module.entityId ? `\n${module.entityId}` : "";
-      const title = `Module #${module.id} (${stateText}${positionText})${entityText}`;
+      const hintText = module.entityId ? "\nClick for full details" : "";
+      const title = `Module #${module.id} (${stateText}${positionText}${detailText})${hintText}${entityText}`;
       if (tile.title !== title) tile.title = title;
       tile.setAttribute("aria-label", title);
     }

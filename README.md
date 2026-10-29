@@ -15,7 +15,9 @@ A complete Home Assistant integration and interactive Lovelace card for DIY RS48
   - Authentic split-flap letter tiles.
   - Responsive tiles and labels that scale with the number of modules.
   - One tile per module, linked to that module's own entity.
-  - Click a module tile to open its Home Assistant more-info dialog.
+  - Click a module tile to open its Home Assistant more-info dialog with the
+    drum/flap list, current step, homing settings, position map and any other
+    module-specific diagnostics.
   - Live module status display (module ID, flap character, state).
   - Quick text input with `Enter` key support.
   - Bus scan & module sync triggers with inline error feedback.
@@ -84,6 +86,62 @@ attribute.)*
 | `<prefix>/command/display` | HA &rarr; ESP32 | `{"text":"HELLO"}` | Send string to display |
 | `<prefix>/command/sync` | HA &rarr; ESP32 | `{"action":"fetch_state"}` | Request module and status report |
 | `<prefix>/command/scan` | HA &rarr; ESP32 | `{"action":"scan"}` | Trigger RS485 address scan |
+
+---
+
+## Per-Module Diagnostics
+
+Every module entity exposes its flap character as the entity state and the
+remaining module data as attributes. Click a module tile in the card to open the
+standard Home Assistant more-info dialog with all of them.
+
+| Attribute | Description |
+|---|---|
+| `flap_list` | Ordered drum/flap characters (64 entries on the stock firmware). |
+| `current_step` | Current motor position in half-steps. |
+| `current_index` | Current flap index on the drum. |
+| `auto_homing` | Whether automatic homing is enabled. |
+| `home_offset` | Steps from the Hall sensor edge to flap 0. |
+| `total_steps` | Total half-steps per revolution. |
+| `map_of_positions` | Map of flap index to calibrated step position. |
+| `online` | Whether the module is currently responding. |
+| `last_seen` | Optional last-seen timestamp/value from the firmware. |
+| `extra_stats` | Any additional firmware-specific fields not listed above. |
+
+The integration accepts snake_case, camelCase and PascalCase field names, so
+`current_step`, `currentStep`, `CurrentStep` and `currentStepPos` all work. The
+stats may also be nested in a `stats`, `config`, `details` or `module_stats`
+object inside each module entry.
+
+Example status payload:
+
+```json
+{
+  "state": "online",
+  "text": "HELLO",
+  "modules_count": 1,
+  "modules": [
+    {
+      "id": 1,
+      "state": "idle",
+      "flap": "H",
+      "flap_list": " ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$&()-+=;q:%'.,/?*roygbpw",
+      "current_step": 320,
+      "current_index": 5,
+      "auto_homing": true,
+      "online": true,
+      "home_offset": 2832,
+      "total_steps": 4096,
+      "map_of_positions": {"0": 0, "16": 1024, "32": 2048, "48": 3072}
+    }
+  ]
+}
+```
+
+The stock master firmware currently publishes representative diagnostics for
+its placeholder modules. Replace those values with the slave responses to
+`m<id>d` (configuration/map) and `m<id>l` (drum) when the RS485 polling is wired
+up.
 
 ---
 

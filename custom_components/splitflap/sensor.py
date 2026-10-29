@@ -10,7 +10,13 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN
-from .coordinator import SplitFlapCoordinator, module_sort_key
+from .coordinator import (
+    SplitFlapCoordinator,
+    module_flap,
+    module_sort_key,
+    module_state,
+    module_stats,
+)
 
 
 async def async_setup_entry(
@@ -118,6 +124,12 @@ class SplitFlapModuleSensor(CoordinatorEntity[SplitFlapCoordinator], SensorEntit
     _attr_has_entity_name = True
     _attr_icon = "mdi:view-grid-outline"
 
+    # Large, mostly static diagnostics are shown in more-info but should not be
+    # written to the recorder on every flap change.
+    _unrecorded_attributes = frozenset(
+        {"flap_list", "map_of_positions", "extra_stats"}
+    )
+
     def __init__(self, coordinator: SplitFlapCoordinator, module_id: str) -> None:
         """Initialize a module sensor."""
         super().__init__(coordinator)
@@ -156,21 +168,25 @@ class SplitFlapModuleSensor(CoordinatorEntity[SplitFlapCoordinator], SensorEntit
     @property
     def native_value(self) -> str:
         """Return the flap character currently shown by the module."""
-        flap = self._module.get("flap")
+        flap = module_flap(self._module)
         return "" if flap is None else str(flap)
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
         """Return module details and discovery metadata for the Lovelace card."""
         module = self._module
-        return {
+        attributes = {
             # Namespaced attributes are used by the card to find module entities
             # without relying on entity-id naming.
             "splitflap_module_id": self._module_id,
             "splitflap_prefix": self.coordinator.prefix,
             "module_id": self._module_id,
             "position": self._position,
-            "flap": module.get("flap"),
-            "module_state": str(module.get("state") or "unknown"),
+            "flap": module_flap(module),
+            "module_state": module_state(module),
             "topic_prefix": self.coordinator.prefix,
         }
+        # FlapList, CurrentStep, AutoHoming, MapOfPositions and any additional
+        # firmware fields are exposed here for the more-info dialog.
+        attributes.update(module_stats(module))
+        return attributes
