@@ -18,6 +18,7 @@ _LOGGER = logging.getLogger(__name__)
 SERVICE_SEND_TEXT = "send_text"
 SERVICE_SYNC = "sync"
 SERVICE_SCAN = "scan"
+SERVICE_SCAN = "update"
 
 # Service parameters
 ATTR_TEXT = "text"
@@ -71,6 +72,11 @@ async def handle_scan(call: ServiceCall, hass: HomeAssistant) -> None:
     for coordinator in get_coordinators(hass):
         await coordinator.trigger_bus_scan()
 
+async def handle_update(call: ServiceCall, hass: HomeAssistant) -> None:
+    """Update data"""
+    for coordinator in get_coordinators(hass):
+        await coordinator.update_data()
+
 
 # =============================================================================
 # SERVICE REGISTRATION
@@ -103,6 +109,10 @@ SERVICES: list[ServiceDefinition] = [
     ServiceDefinition(
         name=SERVICE_SCAN,
         handler=handle_scan,
+    ),
+    ServiceDefinition(
+        name=SERVICE_UPDATE,
+        handler=handle_update,
     ),
 ]
 

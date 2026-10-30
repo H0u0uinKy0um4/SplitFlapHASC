@@ -68,6 +68,7 @@ class SplitFlapScanButton(SplitFlapBaseButton):
 BUTTON_CLASSES: list[type[SplitFlapBaseButton]] = [
     SplitFlapSyncButton,
     SplitFlapScanButton,
+    SplitFlapUpdateButton,
 ]
 
 
@@ -79,3 +80,15 @@ async def async_setup_entry(
     """Set up SplitFlap button entities."""
     coordinator: SplitFlapCoordinator = hass.data[DOMAIN][entry.entry_id]
     async_add_entities(button_cls(coordinator) for button_cls in BUTTON_CLASSES)
+
+//Button For Refresh
+class SplitFlapUpdateButton(SplitFlapBaseButton):
+    """Update without whole scan."""
+
+    button_id = "update"          # Lowercase unique suffix (e.g. "clear"). Creates entity button.<device>_clear
+    _attr_name = "update"         # Name shown in Home Assistant UI (e.g. "Clear Display")
+    _attr_icon = "mdi:sync"     # Icon from materialdesignicons.com (e.g. "mdi:eraser")
+
+    async def async_press(self) -> None:
+        """Update."""
+        await self.coordinator.update_data()

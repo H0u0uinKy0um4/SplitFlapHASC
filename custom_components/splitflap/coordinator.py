@@ -580,3 +580,10 @@ class SplitFlapCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         payload = json.dumps({"action": "fetch_state"})
         await mqtt.async_publish(self.hass, topic, payload)
         _LOGGER.info("Requested sync/fetch state on %s", topic)
+
+    async def update_data(self) -> None:
+        """Update data"""
+        topic = f"{self.prefix}/command/update"
+        payload = json.dumps({"action": "update_data"})
+        await mqtt.async_publish(self.hass, topic, payload)
+        _LOGGER.info("Requested update data %s", topic)

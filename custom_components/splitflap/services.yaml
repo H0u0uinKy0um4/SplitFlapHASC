@@ -32,3 +32,6 @@ sync:
 scan:
   name: Scan Bus
   description: Trigger an RS485 bus scan on the ESP32 master to discover modules.
+scan:
+  name: Update data
+  description: Update data from RS485 daster than scan.
