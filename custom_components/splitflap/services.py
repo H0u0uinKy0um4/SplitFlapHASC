@@ -142,3 +142,4 @@ def async_unregister_services(hass: HomeAssistant) -> None:
             _LOGGER.debug(
                 "Unregistered SplitFlap service: %s.%s", DOMAIN, service_def.name
             )
+

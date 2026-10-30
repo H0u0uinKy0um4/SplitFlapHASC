@@ -56,3 +56,4 @@ Guidance and architecture reference for AI agents working in this repository.
 - **Owner Guide**: When altering button or service patterns, always keep `docs/ADDING_FEATURES.md` in sync.
 
 For human-friendly recipes and worked examples, see [docs/ADDING_FEATURES.md](docs/ADDING_FEATURES.md).
+

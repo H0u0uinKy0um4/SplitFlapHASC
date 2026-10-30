@@ -267,3 +267,4 @@ BUTTON_CLASSES: list[type[SplitFlapBaseButton]] = [
 1. Go to **Settings** &rarr; **Devices & Services** &rarr; **SplitFlap**.
 2. Under **Controls**, you will now see **Clear Display** with an eraser icon!
 3. Click **Press**: all modules on your SplitFlap display will be set to blank flaps.
+
