@@ -1,6 +1,8 @@
 send_text:
   name: Send Text
-  description: Send a string to display on the SplitFlap modules.
+  description: >-
+    Send a string to the SplitFlap modules. The integration sends an explicit
+    character target for every known module.
   fields:
     text:
       name: Text
@@ -13,7 +15,7 @@ send_text:
       name: Start module
       description: >-
         1-based module position where the text should begin. Modules before it
-        are cleared (filled with spaces).
+        and modules beyond the text are cleared (set to a blank flap).
       required: false
       default: 1
       example: 5

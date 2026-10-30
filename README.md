@@ -28,8 +28,9 @@ A complete Home Assistant integration and interactive Lovelace card for DIY RS48
   - Quick text input with `Enter` key support.
   - Bus scan & module sync triggers with inline error feedback.
 - **Home Assistant Services**:
-  - `splitflap.send_text`: Send strings to the display, optionally from a
-    specific module position with `start`.
+  - `splitflap.send_text`: Send a string to the display. The integration
+    converts it into an explicit character target for every known module,
+    optionally starting at a specific module position with `start`.
   - `splitflap.sync`: Request the ESP32 to publish current module flaps and state.
   - `splitflap.scan`: Trigger an RS485 bus scan to detect connected modules.
 - **Entities Provided**:
@@ -97,13 +98,31 @@ attribute, but are only used to enrich the in-card panel when available.)*
 | Topic | Direction | Payload Example | Purpose |
 |---|---|---|---|
 | `<prefix>/status` | ESP32 &rarr; HA | `{"state":"online","modules_count":3,"text":"TEST 123","modules":[{"id":1,"state":"idle","flap":"A"}]}` | State updates & module flaps |
-| `<prefix>/command/display` | HA &rarr; ESP32 | `{"text":"HELLO"}` | Send string to display |
+| `<prefix>/command/display` | HA &rarr; ESP32 | `{"modules":[{"id":1,"char":"H"},{"id":2,"char":"E"},{"id":3,"char":"L"},{"id":4,"char":"L"},{"id":5,"char":"O"}]}` | Set the character for every module |
 | `<prefix>/command/sync` | HA &rarr; ESP32 | `{"action":"fetch_state"}` | Request module and status report |
 | `<prefix>/command/scan` | HA &rarr; ESP32 | `{"action":"scan"}` | Trigger RS485 address scan |
 
+The display command contains one entry per detected module. Some examples:
+
+```json
+{
+  "modules": [
+    {"id": 1, "char": "H"},
+    {"id": 2, "char": "E"},
+    {"id": 3, "char": "L"},
+    {"id": 4, "char": "L"},
+    {"id": 5, "char": "O"},
+    {"id": 6, "char": " "}
+  ]
+}
+```
+
+Modules before the requested start position and modules beyond the text get a
+space, so they show a blank flap. The ESP32 master forwards each entry to the
+matching RS485 module as `m<id>-<char>`.
+
 To write to a specific part of the display from an automation, use the optional
-`start` field (1-based module position). The integration fills earlier modules
-with spaces, which the firmware treats as blanks:
+`start` field (1-based module position):
 
 ```yaml
 service: splitflap.send_text

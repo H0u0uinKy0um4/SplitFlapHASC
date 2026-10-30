@@ -28,6 +28,14 @@ def module_sort_key(module_id: Any) -> tuple[int, int | str]:
     return (1, value.casefold())
 
 
+def _module_payload_id(module_id: Any) -> int | str:
+    """Return a module id as a JSON-friendly number when possible."""
+    value = str(module_id).strip()
+    if _NUMERIC_ID.match(value):
+        return int(value)
+    return value
+
+
 def normalize_modules(raw_modules: Any) -> dict[str, dict[str, Any]]:
     """Normalize the different module payload shapes into an id -> module map."""
     modules: dict[str, dict[str, Any]] = {}
@@ -494,10 +502,13 @@ class SplitFlapCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             _LOGGER.info("Unsubscribed from SplitFlap MQTT topic.")
 
     async def send_text(self, text: str, start: int = 1) -> None:
-        """Send a display text command to the ESP32.
+        """Send an explicit character for every SplitFlap module.
 
-        ``start`` is a 1-based module position. The firmware maps text to
-        modules from the left, so leading spaces are used to place the text.
+        The display command no longer contains a free-form string. It contains
+        one ``{"id": <module id>, "char": <character>}`` entry per module so the
+        ESP32 master can forward each character to the matching RS485 module.
+        Modules before ``start`` and modules beyond the text receive a space so
+        they show a blank flap.
         """
         text = str(text)
         try:
@@ -507,32 +518,55 @@ class SplitFlapCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if start > 1:
             text = (" " * (start - 1)) + text
 
-        # Optimistically update last_message and module flap characters
+        module_ids = self._ordered_module_ids()
+        module_chars = {
+            module_id: text[index] if index < len(text) else " "
+            for index, module_id in enumerate(module_ids)
+        }
+        payload_modules = [
+            {"id": _module_payload_id(module_id), "char": module_chars[module_id]}
+            for module_id in module_ids
+        ]
+
+        if not payload_modules:
+            _LOGGER.warning(
+                "Cannot send display characters: no SplitFlap modules are known yet"
+            )
+
+        # Optimistically update last_message and the displayed module flaps.
         updated = dict(self.data)
         updated["last_message"] = text
 
         modules = updated.get("modules")
         if isinstance(modules, dict) and modules:
             new_modules: dict[str, dict[str, Any]] = {}
-            sorted_ids = sorted(modules, key=module_sort_key)
-            for index, module_id in enumerate(sorted_ids):
-                module = modules[module_id]
+            for module_id, module in modules.items():
                 module_data = dict(module) if isinstance(module, dict) else {}
-                module_data["flap"] = text[index] if index < len(text) else ""
+                module_data["flap"] = module_chars.get(module_id, " ")
                 new_modules[module_id] = module_data
             updated["modules"] = new_modules
 
         self.async_set_updated_data(updated)
 
         topic = f"{self.prefix}/command/display"
-        payload = json.dumps({"text": text})
+        payload = json.dumps({"modules": payload_modules})
         await mqtt.async_publish(self.hass, topic, payload)
         _LOGGER.info(
-            "Published display command '%s' at module %s to %s",
-            text,
-            start,
+            "Published display characters for %s module(s) to %s",
+            len(payload_modules),
             topic,
         )
+
+    def _ordered_module_ids(self) -> list[str]:
+        """Return the known module ids in display order."""
+        modules = self.data.get("modules")
+        if isinstance(modules, dict) and modules:
+            return sorted(modules, key=module_sort_key)
+
+        # Before the first status payload arrives, fall back to the reported
+        # count and assume the stock 1-based module ids.
+        count = _coerce_count(self.data.get("modules_count"), 0)
+        return [str(module_id) for module_id in range(1, count + 1)]
 
     async def trigger_bus_scan(self) -> None:
         """Request the ESP32 to scan the RS485 bus."""
