@@ -7,31 +7,24 @@ from typing import Any
 
 from homeassistant.components.frontend import add_extra_js_url
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant, ServiceCall
-from homeassistant.helpers import config_validation as cv
-import voluptuous as vol
+from homeassistant.core import HomeAssistant
 
 from .const import DOMAIN, FRONTEND_URL_PATH, FRONTEND_VERSION, PLATFORMS
 from .coordinator import SplitFlapCoordinator
+from .services import (
+    SERVICE_SCAN,
+    SERVICE_SEND_TEXT,
+    SERVICE_SYNC,
+    SERVICES,
+    async_register_services,
+    async_unregister_services,
+    get_coordinators,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
-SERVICE_SEND_TEXT = "send_text"
-SERVICE_SYNC = "sync"
-SERVICE_SCAN = "scan"
-SERVICES = (SERVICE_SEND_TEXT, SERVICE_SYNC, SERVICE_SCAN)
-
-ATTR_TEXT = "text"
-ATTR_START = "start"
-
-SEND_TEXT_SCHEMA = vol.Schema(
-    {
-        vol.Required(ATTR_TEXT): cv.string,
-        vol.Optional(ATTR_START, default=1): vol.All(
-            vol.Coerce(int), vol.Range(min=1, max=9999)
-        ),
-    }
-)
+# Keep backward-compatible alias
+_get_coordinators = get_coordinators
 
 
 async def async_setup(hass: HomeAssistant, config: dict[str, Any]) -> bool:
@@ -56,7 +49,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
     # Register custom domain services if not already registered
-    _async_register_services(hass)
+    async_register_services(hass)
 
     entry.async_on_unload(entry.add_update_listener(async_reload_entry))
 
@@ -78,8 +71,8 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         if coordinator is not None:
             await coordinator.async_unload()
 
-        if not _get_coordinators(hass):
-            _async_unregister_services(hass)
+        if not get_coordinators(hass):
+            async_unregister_services(hass)
 
     return unload_ok
 
@@ -118,53 +111,3 @@ async def _async_register_frontend(hass: HomeAssistant) -> None:
         _LOGGER.debug("Registered SplitFlap card at %s", card_url)
     except Exception as err:  # noqa: BLE001 - never fail setup because of the card
         _LOGGER.warning("Could not auto-register SplitFlap frontend card: %s", err)
-
-
-def _get_coordinators(hass: HomeAssistant) -> list[SplitFlapCoordinator]:
-    """Return all loaded SplitFlap coordinators."""
-    return [
-        value
-        for value in hass.data.get(DOMAIN, {}).values()
-        if isinstance(value, SplitFlapCoordinator)
-    ]
-
-
-def _async_register_services(hass: HomeAssistant) -> None:
-    """Register domain-level services for automations and scripts."""
-    if not hass.services.has_service(DOMAIN, SERVICE_SEND_TEXT):
-
-        async def handle_send_text(call: ServiceCall) -> None:
-            """Handle send_text service."""
-            text = call.data[ATTR_TEXT]
-            start = call.data.get(ATTR_START, 1)
-            for coordinator in _get_coordinators(hass):
-                await coordinator.send_text(text, start=start)
-
-        hass.services.async_register(
-            DOMAIN, SERVICE_SEND_TEXT, handle_send_text, schema=SEND_TEXT_SCHEMA
-        )
-
-    if not hass.services.has_service(DOMAIN, SERVICE_SYNC):
-
-        async def handle_sync(call: ServiceCall) -> None:
-            """Handle sync service."""
-            for coordinator in _get_coordinators(hass):
-                await coordinator.fetch_esp32_data()
-
-        hass.services.async_register(DOMAIN, SERVICE_SYNC, handle_sync)
-
-    if not hass.services.has_service(DOMAIN, SERVICE_SCAN):
-
-        async def handle_scan(call: ServiceCall) -> None:
-            """Handle scan service."""
-            for coordinator in _get_coordinators(hass):
-                await coordinator.trigger_bus_scan()
-
-        hass.services.async_register(DOMAIN, SERVICE_SCAN, handle_scan)
-
-
-def _async_unregister_services(hass: HomeAssistant) -> None:
-    """Remove domain services when the last config entry is unloaded."""
-    for service in SERVICES:
-        if hass.services.has_service(DOMAIN, service):
-            hass.services.async_remove(DOMAIN, service)

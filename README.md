@@ -191,6 +191,17 @@ up.
 
 ---
 
+## Customization & Adding Features
+
+Want to add your own custom buttons (e.g. Clear Display, Reset) or backend services for automations?
+See the beginner-friendly step-by-step guide:
+- [Adding Features Guide (No Python needed)](docs/ADDING_FEATURES.md)
+
+For AI agents working on this codebase:
+- [Agent Reference & Architecture](AGENTS.md)
+
+---
+
 ## Troubleshooting
 
 ### `Platform mqtt does not generate unique IDs`
