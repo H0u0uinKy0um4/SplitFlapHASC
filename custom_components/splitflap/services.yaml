@@ -9,6 +9,19 @@ send_text:
       example: "HELLO WORLD"
       selector:
         text:
+    start:
+      name: Start module
+      description: >-
+        1-based module position where the text should begin. Modules before it
+        are cleared (filled with spaces).
+      required: false
+      default: 1
+      example: 5
+      selector:
+        number:
+          min: 1
+          max: 9999
+          mode: box
 
 sync:
   name: Sync Modules

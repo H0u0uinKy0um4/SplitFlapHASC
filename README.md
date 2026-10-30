@@ -14,15 +14,22 @@ A complete Home Assistant integration and interactive Lovelace card for DIY RS48
 - **Interactive Split-Flap Lovelace Card**:
   - Authentic split-flap letter tiles.
   - Responsive tiles and labels that scale with the number of modules.
-  - One tile per module, linked to that module's own entity.
-  - Click a module tile to open its Home Assistant more-info dialog with the
+  - One tile per module; tiles work with or without a per-module HA entity.
+  - Click any tile to open an in-card module panel with state, position,
     drum/flap list, current step, homing settings, position map and any other
-    module-specific diagnostics.
+    module-specific diagnostics. A button opens the HA entity when one exists.
+  - **Layout controls** in the card: set the number of columns (or auto-fit)
+    and the tile width:height ratio, so boards with 20-100 modules stay usable.
+    Settings are stored in the browser; `module_columns`, `module_ratio` and
+    `module_gap` YAML options provide defaults.
+  - **Start position targeting**: enter a start module and the text is written
+    from that module onward (earlier modules are cleared).
   - Live module status display (module ID, flap character, state).
   - Quick text input with `Enter` key support.
   - Bus scan & module sync triggers with inline error feedback.
 - **Home Assistant Services**:
-  - `splitflap.send_text`: Send strings to the display.
+  - `splitflap.send_text`: Send strings to the display, optionally from a
+    specific module position with `start`.
   - `splitflap.sync`: Request the ESP32 to publish current module flaps and state.
   - `splitflap.scan`: Trigger an RS485 bus scan to detect connected modules.
 - **Entities Provided**:
@@ -53,8 +60,11 @@ A complete Home Assistant integration and interactive Lovelace card for DIY RS48
 The Lovelace card is automatically served by the integration at `/splitflap/splitflap-card.js`.
 
 The card automatically discovers the entities belonging to the SplitFlap device.
-Each detected module is rendered from its own `sensor.splitflap_module_<id>` entity.
-Clicking a module tile opens the module entity's more-info dialog.
+Each detected module is rendered as its own tile. Per-module HA entities are
+optional: the card can render and inspect modules directly from the aggregate
+`Detected Modules` sensor, so it keeps working even when you disable the
+per-module sensor entities. Clicking a module tile opens the in-card module
+panel. Use the gear button to change columns / tile ratio for larger displays.
 
 ### Card Configuration Example (YAML)
 
@@ -66,6 +76,10 @@ status_entity: sensor.splitflap_master_status
 modules_sensor: sensor.splitflap_detected_modules
 sync_entity: button.splitflap_sync
 scan_entity: button.splitflap_scan
+# Optional layout defaults (the gear button overrides and saves them locally)
+module_columns: 0      # 0 = auto-fit; e.g. 50 wraps a 100-module board into 2 rows
+module_ratio: "38:52"  # tile width:height, or a number such as 0.73
+module_gap: 6          # tile gap in pixels
 # Optional: explicitly select the module entities to display
 # module_entities:
 #   - sensor.splitflap_module_1
@@ -74,7 +88,7 @@ scan_entity: button.splitflap_scan
 
 *(All entity fields are optional; sensible defaults are automatically resolved.
 Module entities are discovered automatically from their `splitflap_module_id`
-attribute.)*
+attribute, but are only used to enrich the in-card panel when available.)*
 
 ---
 
@@ -87,13 +101,26 @@ attribute.)*
 | `<prefix>/command/sync` | HA &rarr; ESP32 | `{"action":"fetch_state"}` | Request module and status report |
 | `<prefix>/command/scan` | HA &rarr; ESP32 | `{"action":"scan"}` | Trigger RS485 address scan |
 
+To write to a specific part of the display from an automation, use the optional
+`start` field (1-based module position). The integration fills earlier modules
+with spaces, which the firmware treats as blanks:
+
+```yaml
+service: splitflap.send_text
+data:
+  text: "HELLO"
+  start: 5
+```
+
 ---
 
 ## Per-Module Diagnostics
 
-Every module entity exposes its flap character as the entity state and the
-remaining module data as attributes. Click a module tile in the card to open the
-standard Home Assistant more-info dialog with all of them.
+When a module entity exists, it exposes its flap character as the entity state
+and the remaining module data as attributes. Click a module tile in the card to
+open the in-card module panel with all of them (no entity is required for this).
+If the module has an entity, the panel also offers an **Open entity** button for
+the standard Home Assistant more-info dialog.
 
 | Attribute | Description |
 |---|---|

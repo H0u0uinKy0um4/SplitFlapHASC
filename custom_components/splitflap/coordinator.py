@@ -493,9 +493,19 @@ class SplitFlapCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._mqtt_unsub = None
             _LOGGER.info("Unsubscribed from SplitFlap MQTT topic.")
 
-    async def send_text(self, text: str) -> None:
-        """Send a display text command to the ESP32."""
+    async def send_text(self, text: str, start: int = 1) -> None:
+        """Send a display text command to the ESP32.
+
+        ``start`` is a 1-based module position. The firmware maps text to
+        modules from the left, so leading spaces are used to place the text.
+        """
         text = str(text)
+        try:
+            start = max(int(start), 1)
+        except (TypeError, ValueError):
+            start = 1
+        if start > 1:
+            text = (" " * (start - 1)) + text
 
         # Optimistically update last_message and module flap characters
         updated = dict(self.data)
@@ -517,7 +527,12 @@ class SplitFlapCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         topic = f"{self.prefix}/command/display"
         payload = json.dumps({"text": text})
         await mqtt.async_publish(self.hass, topic, payload)
-        _LOGGER.info("Published display command '%s' to %s", text, topic)
+        _LOGGER.info(
+            "Published display command '%s' at module %s to %s",
+            text,
+            start,
+            topic,
+        )
 
     async def trigger_bus_scan(self) -> None:
         """Request the ESP32 to scan the RS485 bus."""

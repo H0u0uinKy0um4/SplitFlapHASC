@@ -22,10 +22,14 @@ SERVICE_SCAN = "scan"
 SERVICES = (SERVICE_SEND_TEXT, SERVICE_SYNC, SERVICE_SCAN)
 
 ATTR_TEXT = "text"
+ATTR_START = "start"
 
 SEND_TEXT_SCHEMA = vol.Schema(
     {
         vol.Required(ATTR_TEXT): cv.string,
+        vol.Optional(ATTR_START, default=1): vol.All(
+            vol.Coerce(int), vol.Range(min=1, max=9999)
+        ),
     }
 )
 
@@ -132,8 +136,9 @@ def _async_register_services(hass: HomeAssistant) -> None:
         async def handle_send_text(call: ServiceCall) -> None:
             """Handle send_text service."""
             text = call.data[ATTR_TEXT]
+            start = call.data.get(ATTR_START, 1)
             for coordinator in _get_coordinators(hass):
-                await coordinator.send_text(text)
+                await coordinator.send_text(text, start=start)
 
         hass.services.async_register(
             DOMAIN, SERVICE_SEND_TEXT, handle_send_text, schema=SEND_TEXT_SCHEMA
