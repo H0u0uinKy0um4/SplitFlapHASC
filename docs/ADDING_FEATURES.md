@@ -24,7 +24,7 @@ Every file in the project has one specific job. Here is where everything lives:
 
 ## 2. Minimal Python Survival Notes
 
-You do not need to learn Python. You just need to follow these four golden rules when editing files:
+You do not need to learn Python. You just need to follow these five golden rules when editing files:
 
 1. **Indentation (Spacing)**:
    - Python does not use curly brackets `{}` to group code; it uses spaces.
@@ -32,23 +32,28 @@ You do not need to learn Python. You just need to follow these four golden rules
    - Never use the `Tab` key (or make sure your text editor is set to insert 4 spaces when pressing `Tab`).
    - Keep all lines inside a block aligned to the exact same column.
 
-2. **Quotes**:
+2. **Comments**:
+   - Comments in Python start with `#` (e.g. `# This is a comment`).
+   - **Never use `//`** (C++/JavaScript style) or `/* */`. Using `//` will cause Home Assistant to crash on startup with `SyntaxError: invalid syntax`.
+
+3. **Quotes**:
    - Text values must be wrapped in matching quotes: `"like this"` or `'like this'`.
    - Never leave a quote unclosed (e.g. `"missing quote`).
 
-3. **Commas in Lists**:
+4. **Commas in Lists**:
    - When items are listed inside square brackets `[ ... ]`, separate each item with a comma `,`.
    - Putting a comma after the last item is totally fine and recommended.
 
-4. **Names**:
+5. **Names & Order**:
    - Python names cannot have spaces.
    - Class names use CamelCase (e.g. `SplitFlapClearButton`).
    - Variable and ID names use lowercase letters with underscores (e.g. `clear_display`).
+   - Python reads files **from top to bottom**. Always define a class or function **above** where you use or register it.
 
 ### What a Typo Looks Like in Home Assistant Logs:
 - `IndentationError: unexpected indent`: One of your lines has too many or too few spaces at the beginning.
-- `SyntaxError: invalid syntax`: You might have forgotten a comma `,`, a colon `:`, or closed a quote `"` incorrectly.
-- `NameError: name '...' is not defined`: You misspelled a name or referenced something before creating it.
+- `SyntaxError: invalid syntax`: You might have used `//` for a comment, forgotten a comma `,`, a colon `:`, or closed a quote `"` incorrectly.
+- `NameError: name '...' is not defined`: You misspelled a name, referenced a variable before defining it, or pasted a class after `BUTTON_CLASSES`.
 
 ---
 
@@ -60,7 +65,7 @@ A **Button** is an entity that appears on your SplitFlap device page in Home Ass
 `custom_components/splitflap/button.py`
 
 ### Step 1: Copy the Template
-Open `custom_components/splitflap/button.py`. Scroll down to the `# BUTTON DEFINITIONS` section. Copy the block below and paste it directly after the existing buttons:
+Open `custom_components/splitflap/button.py`. Scroll to the `# BUTTON DEFINITIONS` section. Copy the block below and paste it **above** `BUTTON_CLASSES`:
 
 ```python
 class SplitFlapCHANGE_MEButton(SplitFlapBaseButton):
@@ -80,10 +85,10 @@ Replace the `CHANGE_ME` placeholders:
 - `button_id = "CHANGE_ME"` &rarr; e.g. `button_id = "clear"` (lowercase, no spaces)
 - `_attr_name = "CHANGE_ME"` &rarr; e.g. `_attr_name = "Clear Display"`
 - `_attr_icon = "mdi:CHANGE_ME"` &rarr; e.g. `_attr_icon = "mdi:eraser"` (any icon from [Material Design Icons](https://pictogrammers.com/library/mdi/))
-- `await self.coordinator.CHANGE_ME()` &rarr; the coordinator action to run (e.g. `await self.coordinator.send_text("")` to blank the display, or `await self.coordinator.fetch_esp32_data()`).
+- `await self.coordinator.CHANGE_ME()` &rarr; the coordinator action to run (e.g. `await self.coordinator.send_text("")` to blank the display, `await self.coordinator.fetch_esp32_data()`, or `await self.coordinator.update_data()`).
 
 ### Step 2: Register the Button
-In the same file (`custom_components/splitflap/button.py`), find the `BUTTON_CLASSES` list near the bottom. Add your new class name to the list:
+In the same file (`custom_components/splitflap/button.py`), find the `BUTTON_CLASSES` list located right below your new button definition. Add your new class name to the list:
 
 ```python
 BUTTON_CLASSES: list[type[SplitFlapBaseButton]] = [
@@ -93,9 +98,11 @@ BUTTON_CLASSES: list[type[SplitFlapBaseButton]] = [
 ]
 ```
 
+> **Important**: Always place your button class definition **above** `BUTTON_CLASSES`, not after it.
+
 ### Checklist for Adding a Button:
-- [x] **`custom_components/splitflap/button.py`** (*Required*): Paste the button class and add its name to `BUTTON_CLASSES`.
-- [ ] **`custom_components/splitflap/coordinator.py`** (*Optional*): Only if you need a brand new MQTT publish command or method that does not exist yet. If you are calling an existing method (like `send_text` or `fetch_esp32_data`), you do not need to touch coordinator.py!
+- [x] **`custom_components/splitflap/button.py`** (*Required*): Paste the button class above `BUTTON_CLASSES` and add its name to `BUTTON_CLASSES`.
+- [ ] **`custom_components/splitflap/coordinator.py`** (*Optional*): Only if you need a brand new MQTT publish command or method that does not exist yet. If you are calling an existing method (like `send_text`, `fetch_esp32_data`, or `update_data`), you do not need to touch coordinator.py!
 - [ ] **`services.yaml`** (*Not needed*): Buttons are entities, not services.
 - [ ] **`custom_components/splitflap/frontend/splitflap-card.js`** (*Optional*): The button automatically appears in Home Assistant's normal device page and can be added to standard dashboards. You only edit the card JS if you want a dedicated button inside the custom SplitFlap card.
 - [ ] **`README.md`** (*Optional*): Add the button name to the list of provided entities.
@@ -104,7 +111,7 @@ BUTTON_CLASSES: list[type[SplitFlapBaseButton]] = [
 
 ## 4. Recipe: Add a New Function Service
 
-A **Service** is an action that can be called from Home Assistant Automations, Scripts, and the Developer Tools page (e.g. `splitflap.send_text` or `splitflap.sync`).
+A **Service** is an action that can be called from Home Assistant Automations, Scripts, and the Developer Tools page (e.g. `splitflap.send_text`, `splitflap.sync`, or `splitflap.update`).
 
 ### Files to edit:
 1. `custom_components/splitflap/services.py` (Backend logic)
@@ -154,11 +161,13 @@ SERVICES: list[ServiceDefinition] = [
         handler=handle_scan,
     ),
     ServiceDefinition(
-        name="CHANGE_ME",          # Service name called as splitflap.CHANGE_ME
+        name="CHANGE_ME",          # Use a direct string (e.g. "update", "clear")
         handler=handle_CHANGE_ME,  # The function you created in Step 1
     ),
 ]
 ```
+
+> **Tip**: You can use a direct quoted string for `name` (e.g. `name="update"`). If you prefer using a constant at the top of the file, define a unique variable name (e.g. `SERVICE_UPDATE = "update"`), not reusing an existing one.
 
 ---
 
@@ -171,7 +180,7 @@ CHANGE_ME:
   description: Description of what this service does.
 ```
 
-*(If your service accepts parameters, you can also define `fields:` here, exactly like `send_text` at the top of `services.yaml`.)*
+> **Important**: The key on the left (e.g. `update:`) must match the service name in `services.py` and must be unique (don't repeat `scan:` or `sync:`).
 
 ### Checklist for Adding a Service:
 - [x] **`custom_components/splitflap/services.py`** (*Required*): Write the handler function and add a `ServiceDefinition` to the `SERVICES` list.
@@ -217,11 +226,14 @@ If anything was mistyped, Home Assistant will safely report it in the logs:
 
 | Error in Logs | What it Means | How to Fix It |
 |---|---|---|
+| `SyntaxError: invalid syntax` on `//...` | You used C++/JS style comment `//`. | Replace `//` with `#` (e.g. `# My comment`). Python comments always use `#`. |
+| `NameError: name 'SERVICE_...' is not defined` | A service constant name was used before being defined, or had a typo. | Either define the constant at the top of `services.py` (e.g. `SERVICE_UPDATE = "update"`), or just use the quoted string directly in `SERVICES`: `name="update"`. |
+| `NameError: name 'SplitFlap...Button' is not defined` | The button class was referenced in `BUTTON_CLASSES` before Python read its definition. | Move your button class definition up so it sits **above** the `BUTTON_CLASSES` list. |
 | `IndentationError: unexpected indent` | A line has extra spaces at the start. | Align the line with the code directly above it (use 4 spaces per indent level). |
 | `SyntaxError: invalid syntax` | Python encountered unexpected text. | Check for a missing comma `,`, an unclosed quote `"`, or a missing colon `:` at the end of a `def` or `class` line. |
-| `NameError: name '...' is not defined` | Python does not recognize a name. | Check spelling in your class name, function name, or variable. |
-| Button does not appear in Home Assistant | The button class was not registered. | Make sure you added your class to the `BUTTON_CLASSES` list at the bottom of `button.py` and restarted Home Assistant. |
+| Button does not appear in Home Assistant | The button class was not registered. | Make sure you added your class to the `BUTTON_CLASSES` list in `button.py` and restarted Home Assistant. |
 | Service does not appear in Developer Tools | The service was not registered. | Make sure you added `ServiceDefinition(...)` to the `SERVICES` list in `services.py` and restarted Home Assistant. |
+| Duplicate key in `services.yaml` | The same service key was written twice. | Make sure each service in `services.yaml` starts with its own unique name (e.g. `update:`, not another `scan:`). |
 | `AttributeError: 'SplitFlapCoordinator' object has no attribute '...'` | The coordinator method called does not exist. | Check the method name called inside `async_press` or your service handler. Verify spelling against `coordinator.py`. |
 
 ---
@@ -233,7 +245,7 @@ Let's walk through adding a button that blanks out all modules on the display.
 ### Step 1: Add the Button in `custom_components/splitflap/button.py`
 Open `custom_components/splitflap/button.py`.
 
-In the `# BUTTON DEFINITIONS` section, add:
+In the `# BUTTON DEFINITIONS` section (above `BUTTON_CLASSES`), add:
 
 ```python
 class SplitFlapClearButton(SplitFlapBaseButton):
@@ -249,12 +261,13 @@ class SplitFlapClearButton(SplitFlapBaseButton):
 ```
 
 ### Step 2: Add to `BUTTON_CLASSES`
-In `custom_components/splitflap/button.py`, find `BUTTON_CLASSES` at the bottom and add `SplitFlapClearButton`:
+In `custom_components/splitflap/button.py`, find `BUTTON_CLASSES` right below your button and add `SplitFlapClearButton`:
 
 ```python
 BUTTON_CLASSES: list[type[SplitFlapBaseButton]] = [
     SplitFlapSyncButton,
     SplitFlapScanButton,
+    SplitFlapUpdateButton,
     SplitFlapClearButton,
 ]
 ```
@@ -267,4 +280,3 @@ BUTTON_CLASSES: list[type[SplitFlapBaseButton]] = [
 1. Go to **Settings** &rarr; **Devices & Services** &rarr; **SplitFlap**.
 2. Under **Controls**, you will now see **Clear Display** with an eraser icon!
 3. Click **Press**: all modules on your SplitFlap display will be set to blank flaps.
-

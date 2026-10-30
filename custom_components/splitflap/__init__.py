@@ -15,6 +15,7 @@ from .services import (
     SERVICE_SCAN,
     SERVICE_SEND_TEXT,
     SERVICE_SYNC,
+    SERVICE_UPDATE,
     SERVICES,
     async_register_services,
     async_unregister_services,

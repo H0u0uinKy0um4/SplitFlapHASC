@@ -32,7 +32,7 @@ class SplitFlapBaseButton(CoordinatorEntity[SplitFlapCoordinator], ButtonEntity)
 # To add a new button:
 # 1. Copy one of the button classes below and give it a unique class name.
 # 2. Change `button_id`, `_attr_name`, `_attr_icon`, and `async_press`.
-# 3. Add your new class to the BUTTON_CLASSES list at the bottom of this file.
+# 3. Add your new class to the BUTTON_CLASSES list below.
 # =============================================================================
 
 
@@ -60,6 +60,18 @@ class SplitFlapScanButton(SplitFlapBaseButton):
         await self.coordinator.trigger_bus_scan()
 
 
+class SplitFlapUpdateButton(SplitFlapBaseButton):
+    """Button to update data from ESP32 without a full bus scan."""
+
+    button_id = "update"
+    _attr_name = "Update"
+    _attr_icon = "mdi:sync"
+
+    async def async_press(self) -> None:
+        """Update data."""
+        await self.coordinator.update_data()
+
+
 # =============================================================================
 # BUTTON REGISTRATION
 # Add any new button class to this list so Home Assistant registers it.
@@ -80,15 +92,3 @@ async def async_setup_entry(
     """Set up SplitFlap button entities."""
     coordinator: SplitFlapCoordinator = hass.data[DOMAIN][entry.entry_id]
     async_add_entities(button_cls(coordinator) for button_cls in BUTTON_CLASSES)
-
-//Button For Refresh
-class SplitFlapUpdateButton(SplitFlapBaseButton):
-    """Update without whole scan."""
-
-    button_id = "update"          # Lowercase unique suffix (e.g. "clear"). Creates entity button.<device>_clear
-    _attr_name = "update"         # Name shown in Home Assistant UI (e.g. "Clear Display")
-    _attr_icon = "mdi:sync"     # Icon from materialdesignicons.com (e.g. "mdi:eraser")
-
-    async def async_press(self) -> None:
-        """Update."""
-        await self.coordinator.update_data()

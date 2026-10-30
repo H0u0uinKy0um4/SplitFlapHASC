@@ -18,7 +18,7 @@ _LOGGER = logging.getLogger(__name__)
 SERVICE_SEND_TEXT = "send_text"
 SERVICE_SYNC = "sync"
 SERVICE_SCAN = "scan"
-SERVICE_SCAN = "update"
+SERVICE_UPDATE = "update"
 
 # Service parameters
 ATTR_TEXT = "text"
@@ -72,8 +72,9 @@ async def handle_scan(call: ServiceCall, hass: HomeAssistant) -> None:
     for coordinator in get_coordinators(hass):
         await coordinator.trigger_bus_scan()
 
+
 async def handle_update(call: ServiceCall, hass: HomeAssistant) -> None:
-    """Update data"""
+    """Request quick data update from ESP32 master."""
     for coordinator in get_coordinators(hass):
         await coordinator.update_data()
 
@@ -152,4 +153,3 @@ def async_unregister_services(hass: HomeAssistant) -> None:
             _LOGGER.debug(
                 "Unregistered SplitFlap service: %s.%s", DOMAIN, service_def.name
             )
-
