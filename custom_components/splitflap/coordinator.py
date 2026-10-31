@@ -329,9 +329,38 @@ def module_stats(module: dict[str, Any]) -> dict[str, Any]:
     if positions is not None:
         stats["map_of_positions"] = positions
 
+    # Home Assistant dictates the flap character, so derive the matching flap
+    # index and its step position from the module's drum and position map.
+    flap_list = stats.get("flap_list")
+    flap = module.get("flap")
+    if isinstance(flap_list, list) and flap_list and flap not in (None, ""):
+        try:
+            flap_index = flap_list.index(str(flap))
+        except ValueError:
+            flap_index = None
+        if flap_index is not None:
+            stats["flap_index"] = flap_index
+            flap_position = None
+            if isinstance(positions, dict):
+                flap_position = positions.get(str(flap_index))
+            if flap_position is None:
+                total_steps = stats.get("total_steps")
+                if isinstance(total_steps, int) and total_steps > 0:
+                    # Same fallback the slave firmware uses for unmapped flaps.
+                    flap_position = flap_index * total_steps // 64
+            if flap_position is not None:
+                stats["flap_position"] = flap_position
+
     # Keep any additional firmware-specific fields visible in the more-info
     # dialog instead of silently dropping them.
-    known = {"id", "flap", *_MODULE_STATE_KEYS, *_MODULE_STAT_CONTAINERS}
+    known = {
+        "id",
+        "flap",
+        "flap_index",
+        "flap_position",
+        *_MODULE_STATE_KEYS,
+        *_MODULE_STAT_CONTAINERS,
+    }
     for aliases in MODULE_STAT_ALIASES.values():
         known.update(aliases)
     extra: dict[str, Any] = {}
@@ -363,6 +392,30 @@ def module_flap(module: dict[str, Any]) -> Any:
     return None
 
 
+def apply_dictated_flaps(
+    modules: dict[str, dict[str, Any]], text: str
+) -> dict[str, dict[str, Any]]:
+    """Overlay the text Home Assistant dictated onto every module's flap.
+
+    Home Assistant is the source of truth for what the display should show, so
+    a status payload must not overwrite the flap with stale firmware data. The
+    text is mapped onto the known modules in bus order, exactly like
+    :meth:`SplitFlapCoordinator.send_text`; modules past the end are blanked, and
+    an empty text blanks the whole display.
+    """
+    if not isinstance(modules, dict) or not modules:
+        return modules
+
+    updated: dict[str, dict[str, Any]] = {}
+    for module_id, module in modules.items():
+        updated[module_id] = dict(module) if isinstance(module, dict) else {}
+
+    for index, module_id in enumerate(sorted(updated, key=module_sort_key)):
+        updated[module_id]["flap"] = text[index] if index < len(text) else " "
+
+    return updated
+
+
 class SplitFlapCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     """Class to manage fetching SplitFlap data over MQTT."""
 
@@ -390,6 +443,7 @@ class SplitFlapCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "modules_count": 0,
             "modules": {},
             "last_message": "",
+            "text_directed": False,
         }
         self._mqtt_unsub = None
         self._offline_timer: CALLBACK_TYPE | None = None
@@ -421,6 +475,7 @@ class SplitFlapCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "modules": modules if isinstance(modules, dict) else {},
             "modules_count": _coerce_count(self.data.get("modules_count"), 0),
             "last_message": str(self.data.get("last_message") or ""),
+            "text_directed": bool(self.data.get("text_directed", False)),
             "saved_at": dt_util.now(dt_util.UTC).isoformat(),
         }
 
@@ -459,6 +514,11 @@ class SplitFlapCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "modules": modules,
                 "modules_count": modules_count,
                 "last_message": last_message,
+                # Non-empty saved text predates the text_directed flag, but it
+                # was dictated by this integration, so keep it authoritative.
+                "text_directed": bool(
+                    stored.get("text_directed", False) or last_message
+                ),
                 # The hardware is not connected yet. Report offline until a
                 # fresh MQTT payload arrives, but keep the remembered data.
                 "status": "offline",
@@ -523,7 +583,14 @@ class SplitFlapCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         }
 
         if "text" in payload and isinstance(payload["text"], str):
-            new_data["last_message"] = payload["text"]
+            # Home Assistant is the source of truth for the displayed text.
+            # Only adopt firmware text when nothing has been dictated yet
+            # (e.g. first setup), so an ESP32 restart cannot wipe it and an
+            # explicit blank command stays blank.
+            if not new_data.get("text_directed") and not new_data.get(
+                "last_message"
+            ):
+                new_data["last_message"] = payload["text"]
 
         if "modules" in payload:
             raw_modules = payload["modules"]
@@ -551,6 +618,19 @@ class SplitFlapCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             )
             if modules_count > 0 or not offline or not new_data.get("modules"):
                 new_data["modules_count"] = modules_count
+
+        # The integration dictates the display, so ignore the flaps reported by
+        # the firmware and overlay the text Home Assistant last sent. This also
+        # keeps the UI correct after an ESP32 restart resets its own text.
+        modules = new_data.get("modules")
+        if (
+            isinstance(modules, dict)
+            and modules
+            and (new_data.get("text_directed") or new_data.get("last_message"))
+        ):
+            new_data["modules"] = apply_dictated_flaps(
+                modules, str(new_data.get("last_message") or "")
+            )
 
         # Any live payload supersedes state restored from storage. Offline
         # last-will messages keep the restored marker so consumers can tell the
@@ -642,15 +722,11 @@ class SplitFlapCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # Optimistically update last_message and the displayed module flaps.
         updated = dict(self.data)
         updated["last_message"] = text
+        updated["text_directed"] = True
 
         modules = updated.get("modules")
         if isinstance(modules, dict) and modules:
-            new_modules: dict[str, dict[str, Any]] = {}
-            for module_id, module in modules.items():
-                module_data = dict(module) if isinstance(module, dict) else {}
-                module_data["flap"] = module_chars.get(module_id, " ")
-                new_modules[module_id] = module_data
-            updated["modules"] = new_modules
+            updated["modules"] = apply_dictated_flaps(modules, text)
 
         self.async_set_updated_data(updated)
         self._schedule_save()

@@ -123,6 +123,7 @@ const MODULE_BASE_KEYS = new Set([
   "splitflap_module_id",
   "splitflap_prefix",
   "extra_stats",
+  "flap_position",
   "friendly_name",
   "icon",
   "device_class",
@@ -1840,12 +1841,13 @@ class SplitFlapCard extends HTMLElement {
       ],
       ["Flap", this._firstValue(attrs, ["flap"]) ?? selected.flap],
       [
+        "Flap index",
+        this._firstValue(attrs, MODULE_STAT_ALIASES.current_index),
+      ],
+      ["Flap position", this._firstValue(attrs, ["flap_position"])],
+      [
         "Current step",
         this._firstValue(attrs, MODULE_STAT_ALIASES.current_step),
-      ],
-      [
-        "Current index",
-        this._firstValue(attrs, MODULE_STAT_ALIASES.current_index),
       ],
       [
         "Auto homing",
@@ -1879,7 +1881,7 @@ class SplitFlapCard extends HTMLElement {
     if (flapChars && flapChars.length) {
       body.append(
         this._createDetailItem(
-          `Flap list (${flapChars.length})`,
+          `Flap array (${flapChars.length})`,
           flapChars.join(""),
           true
         )
@@ -1900,7 +1902,7 @@ class SplitFlapCard extends HTMLElement {
 
         const label = document.createElement("span");
         label.className = "detail-label";
-        label.textContent = `Map of positions (${entries.length})`;
+        label.textContent = `Position map (${entries.length})`;
 
         const map = document.createElement("div");
         map.className = "detail-map";
@@ -1916,7 +1918,7 @@ class SplitFlapCard extends HTMLElement {
       }
     } else if (typeof positionMap === "string" && positionMap) {
       body.append(
-        this._createDetailItem("Map of positions", positionMap, true)
+        this._createDetailItem("Position map", positionMap, true)
       );
     }
 

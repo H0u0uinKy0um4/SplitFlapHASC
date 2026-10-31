@@ -102,7 +102,7 @@ attribute, but are only used to enrich the in-card panel when available.)*
 
 | Topic | Direction | Payload Example | Purpose |
 |---|---|---|---|
-| `<prefix>/status` | ESP32 &rarr; HA | `{"state":"online","modules_count":3,"text":"TEST 123","modules":[{"id":1,"state":"idle","flap":"A"}]}` | State updates & module flaps |
+| `<prefix>/status` | ESP32 &rarr; HA | `{"state":"online","modules_count":3,"text":"TEST 123","modules":[{"id":1,"state":"idle","flap":"A","flap_list":" ABC...","map_of_positions":"0=0,16=1024"}]}` | State updates, module diagnostics and flap arrays |
 | `<prefix>/command/display` | HA &rarr; ESP32 | `{"modules":[{"id":1,"char":"H"},{"id":2,"char":"E"},{"id":3,"char":"L"},{"id":4,"char":"L"},{"id":5,"char":"O"}]}` | Set the character for every module |
 | `<prefix>/command/sync` | HA &rarr; ESP32 | `{"action":"fetch_state"}` | Request module and status report |
 | `<prefix>/command/scan` | HA &rarr; ESP32 | `{"action":"scan"}` | Trigger RS485 address scan |
@@ -146,15 +146,24 @@ open the in-card module panel with all of them (no entity is required for this).
 If the module has an entity, the panel also offers an **Open entity** button for
 the standard Home Assistant more-info dialog.
 
+Home Assistant is the source of truth for the displayed character: the
+integration maps the text it last sent onto the modules, so a firmware restart
+or a stale `flap` field cannot change what the entities/card show. The flap
+index and step position are then derived from the module's flap array and
+position map.
+
 | Attribute | Description |
 |---|---|
-| `flap_list` | Ordered drum/flap characters (64 entries on the stock firmware). |
-| `current_step` | Current motor position in half-steps. |
-| `current_index` | Current flap index on the drum. |
+| `flap` | Character Home Assistant dictated for this module (authoritative). |
+| `flap_index` | 0-based flap index of `flap` in the module's flap array. |
+| `flap_position` | Step position for that flap, from the position map or the same fallback the slave uses. |
+| `flap_list` | FlapArray: ordered drum/flap characters (64 entries on the stock firmware). |
+| `map_of_positions` | PositionMap: flap index to calibrated step position for offsets that are set. |
+| `current_step` | Current motor position in half-steps, when reported by firmware. |
+| `current_index` | Current flap index on the drum, when reported by firmware. |
 | `auto_homing` | Whether automatic homing is enabled. |
 | `home_offset` | Steps from the Hall sensor edge to flap 0. |
 | `total_steps` | Total half-steps per revolution. |
-| `map_of_positions` | Map of flap index to calibrated step position. |
 | `online` | Whether the module is currently responding. |
 | `last_seen` | Optional last-seen timestamp/value from the firmware. |
 | `extra_stats` | Any additional firmware-specific fields not listed above. |
@@ -177,22 +186,20 @@ Example status payload:
       "state": "idle",
       "flap": "H",
       "flap_list": " ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$&()-+=;q:%'.,/?*roygbpw",
-      "current_step": 320,
-      "current_index": 5,
       "auto_homing": true,
       "online": true,
       "home_offset": 2832,
       "total_steps": 4096,
-      "map_of_positions": {"0": 0, "16": 1024, "32": 2048, "48": 3072}
+      "map_of_positions": "0=0,16=1024,32=2048,48=3072"
     }
   ]
 }
 ```
 
-The stock master firmware currently publishes representative diagnostics for
-its placeholder modules. Replace those values with the slave responses to
-`m<id>d` (configuration/map) and `m<id>l` (drum) when the RS485 polling is wired
-up.
+The stock master firmware fills these fields by querying each slave with
+`m<id>d` (configuration and position map) and `m<id>l` (64-character drum) at
+boot and during a bus scan. `flap_list` and `map_of_positions` then appear in the
+module's more-info dialog and in the card's module panel.
 
 ---
 
