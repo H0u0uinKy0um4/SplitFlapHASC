@@ -8,7 +8,7 @@
  * dialog, but the card works without per-module entities.
  */
 
-const SPLITFLAP_CARD_VERSION = "1.6.0";
+const SPLITFLAP_CARD_VERSION = "1.6.1";
 const MODULE_ID_ATTR = "splitflap_module_id";
 const MODULE_PREFIX_ATTR = "splitflap_prefix";
 const LAYOUT_STORAGE_PREFIX = "splitflap-card-layout:";
@@ -204,72 +204,246 @@ function flapDelta(expected, actual, flapCount = 64) {
   return raw > count / 2 ? raw - count : raw;
 }
 
+/** Shortest signed step difference between two positions on the reel. */
+function signedStepDifference(value, reference, totalSteps) {
+  const total = Number(totalSteps);
+  if (!Number.isFinite(total) || total <= 0) return 0;
+  const raw =
+    ((Number(value) - Number(reference)) % total + total) % total;
+  return raw > total / 2 ? raw - total : raw;
+}
+
+/**
+ * Normalize the position map coming from the integration (object) or straight
+ * from the firmware (``"8=512,16=1024"``) into ``{index: position}``.
+ */
+function parsePositionMap(value, totalSteps, flapCount = 64) {
+  const result = {};
+  const count = Math.max(Number(flapCount) || 64, 1);
+
+  const put = (rawIndex, rawPosition) => {
+    const index = Number.parseInt(rawIndex, 10);
+    const position = Number(rawPosition);
+    if (!Number.isInteger(index) || index < 0 || index >= count) return;
+    if (!Number.isFinite(position) || position < 0) return;
+    result[index] = normalizeStepPosition(position, totalSteps);
+  };
+
+  if (value === undefined || value === null || value === "") return result;
+
+  if (typeof value === "string") {
+    for (const part of value.split(",")) {
+      const separator = part.indexOf("=");
+      if (separator < 0) continue;
+      put(part.slice(0, separator), part.slice(separator + 1));
+    }
+    return result;
+  }
+
+  if (Array.isArray(value)) {
+    value.forEach((entry, fallbackIndex) => {
+      if (entry && typeof entry === "object") {
+        put(
+          entry.index ?? entry.flap ?? fallbackIndex,
+          entry.position ?? entry.pos ?? entry.step
+        );
+      } else {
+        put(fallbackIndex, entry);
+      }
+    });
+    return result;
+  }
+
+  if (typeof value === "object") {
+    for (const [index, position] of Object.entries(value)) {
+      put(index, position);
+    }
+  }
+  return result;
+}
+
+/**
+ * Linearly interpolate offsets around the reel. The anchors are the freshly
+ * measured flaps; every gap between neighbours is filled. Returns a map of
+ * ``index -> interpolated offset`` for the flaps that were not anchored.
+ */
+function interpolateCircularOffsets(anchors, flapCount) {
+  const result = new Map();
+  const count = Math.max(Number(flapCount) || 64, 1);
+  const indices = [...anchors.keys()]
+    .filter((index) => index >= 0 && index < count)
+    .sort((a, b) => a - b);
+
+  // With fewer than two anchors there is no direction to interpolate along.
+  if (indices.length < 2) return result;
+
+  for (let position = 0; position < indices.length; position += 1) {
+    const start = indices[position];
+    const end = indices[(position + 1) % indices.length];
+    const startValue = anchors.get(start);
+    const endValue = anchors.get(end);
+    const span = (end - start + count) % count;
+    if (span <= 1) continue;
+
+    for (let step = 1; step < span; step += 1) {
+      const index = (start + step) % count;
+      const ratio = step / span;
+      result.set(index, startValue + (endValue - startValue) * ratio);
+    }
+  }
+  return result;
+}
+
 /**
  * Turn expected/actual flap pairs into a calibration plan.
  *
- * The global home-offset error is the median flap offset across all samples.
- * Any error left after applying that correction becomes a position-map entry
- * for that flap index. Tiny residuals (less than half a flap) are ignored.
+ * The model is the one the slave firmware uses: each flap index has an
+ * absolute step target (``map_of_positions``, or ``index * total / 64`` when
+ * unset) and the home offset shifts the whole coordinate system.
+ *
+ * A map entry is a *deviation* from the evenly spaced base positions. The home
+ * offset carries the global alignment, so correcting it restores every map
+ * entry at once; existing entries must not be shifted. The previous version
+ * compared samples against the default position instead of the target the
+ * module actually used, so re-sampling a flap that already had a map entry
+ * overwrote it with a wrong value and pulled neighbouring letters off.
+ *
+ * Each sampled flap now gets ``effectiveTarget - errorSteps`` (moved into the
+ * new home-offset coordinate system), and the measured deviation around the
+ * whole reel can be interpolated so unsampled flaps are corrected too.
  */
 function computeCalibrationPlan(
   samples,
   totalSteps,
   homeOffset,
-  flapCount = 64
+  flapCount = 64,
+  currentMap = {},
+  fillGaps = true
 ) {
   const total = Number(totalSteps);
   const offset = Number(homeOffset);
+  const count = Math.max(Number(flapCount) || 64, 1);
   if (
     !Array.isArray(samples) ||
     samples.length === 0 ||
     !Number.isFinite(total) ||
     total <= 0 ||
-    !Number.isFinite(offset) ||
-    flapCount <= 0
+    !Number.isFinite(offset)
   ) {
     return null;
   }
 
-  const stepPerFlap = total / flapCount;
-  const measured = samples
-    .map((sample) => {
-      const expected = Number(sample.expected);
-      const actual = Number(sample.actual);
-      if (!Number.isFinite(expected) || !Number.isFinite(actual)) return null;
-      const delta = flapDelta(expected, actual, flapCount);
-      return {
-        expected,
-        actual,
-        delta,
-        errorSteps: delta * stepPerFlap,
-      };
-    })
-    .filter(Boolean);
+  const basePosition = (index) => Math.floor((index * total) / count);
+  const stepPerFlap = total / count;
+  const existing = parsePositionMap(currentMap, total, count);
+  const effectiveTarget = (index) =>
+    existing[index] !== undefined ? existing[index] : basePosition(index);
 
-  if (measured.length === 0) return null;
+  const records = [];
+  for (const sample of samples) {
+    const expected = Number(sample.expected);
+    const actual = Number(sample.actual);
+    if (!Number.isInteger(expected) || !Number.isInteger(actual)) continue;
+    if (expected < 0 || expected >= count) continue;
+    if (actual < 0 || actual >= count) continue;
+    records.push({
+      expected,
+      target: effectiveTarget(expected),
+      hadMap: existing[expected] !== undefined,
+      errorSteps: flapDelta(expected, actual, count) * stepPerFlap,
+    });
+  }
+  if (records.length === 0) return null;
 
-  const correction = Math.round(median(measured.map((item) => item.errorSteps)));
-  const newHomeOffset = normalizeStepPosition(offset - correction, total);
-
-  const groups = new Map();
-  for (const item of measured) {
-    const residual = item.errorSteps - correction;
-    if (!groups.has(item.expected)) groups.set(item.expected, []);
-    groups.get(item.expected).push(residual);
+  // Aggregate repeated measurements of the same flap with the median so a
+  // single mis-click cannot dominate that flap.
+  const grouped = new Map();
+  for (const record of records) {
+    if (!grouped.has(record.expected)) {
+      grouped.set(record.expected, {
+        expected: record.expected,
+        target: record.target,
+        hadMap: record.hadMap,
+        errors: [],
+      });
+    }
+    grouped.get(record.expected).errors.push(record.errorSteps);
   }
 
+  const measured = [...grouped.values()].map((entry) => ({
+    expected: entry.expected,
+    target: entry.target,
+    hadMap: entry.hadMap,
+    errorSteps: median(entry.errors),
+  }));
+
+  // Samples on flaps without a map measure the base mapping directly. Prefer
+  // them when estimating the global offset; flaps that were already calibrated
+  // report ~0 even when uncalibrated flaps are still off.
+  const baseSamples = measured.filter((entry) => !entry.hadMap);
+  const correctionSource = baseSamples.length > 0 ? baseSamples : measured;
+  const correction = Math.round(
+    median(correctionSource.map((entry) => entry.errorSteps))
+  );
+  const newHomeOffset = normalizeStepPosition(offset - correction, total);
   const threshold = Math.max(1, Math.round(stepPerFlap / 2));
-  const mapPositions = {};
-  for (const [expected, residuals] of groups.entries()) {
-    const residual = Math.round(
-      residuals.reduce((sum, value) => sum + value, 0) / residuals.length
-    );
-    if (Math.abs(residual) < threshold) continue;
-    const basePosition = Math.floor((expected * total) / flapCount);
-    mapPositions[String(expected)] = normalizeStepPosition(
-      basePosition - residual,
+
+  // New target offset from the default position, expressed in the corrected
+  // home-offset coordinate system: start from the target the module actually
+  // used, move by the observed flap error, then follow the home correction.
+  const anchors = new Map();
+  for (const entry of measured) {
+    const targetOffset = signedStepDifference(
+      entry.target,
+      basePosition(entry.expected),
       total
     );
+    anchors.set(entry.expected, targetOffset - entry.errorSteps + correction);
+  }
+
+  const sampledIndices = new Set(measured.map((entry) => entry.expected));
+  const mapPositions = {};
+  let sampledEntries = 0;
+  let interpolatedEntries = 0;
+  let preservedEntries = 0;
+
+  // Entries for flaps that were not measured are already deviations from the
+  // evenly spaced base positions, so they stay valid when the home offset
+  // changes. Leave them untouched and let the integration merge this partial
+  // update into the existing map.
+  for (const index of Object.keys(existing)) {
+    if (!sampledIndices.has(Number(index))) preservedEntries += 1;
+  }
+
+  // Sampled flaps are written exactly, even if the change is small. Dropping a
+  // previously calibrated entry because its residual is tiny would silently
+  // undo it.
+  for (const entry of measured) {
+    const value = anchors.get(entry.expected) || 0;
+    if (!entry.hadMap && Math.abs(value) < threshold) continue;
+    mapPositions[String(entry.expected)] = normalizeStepPosition(
+      basePosition(entry.expected) + value,
+      total
+    );
+    sampledEntries += 1;
+  }
+
+  // Fill the flaps between measurements so a sparse calibration still aligns
+  // the whole reel. Require at least four measured flaps: with fewer anchors a
+  // single mis-click would be spread across too much of the drum. Existing
+  // entries are never overwritten here.
+  if (fillGaps && measured.length >= 4) {
+    const interpolated = interpolateCircularOffsets(anchors, count);
+    for (const [index, value] of interpolated.entries()) {
+      if (sampledIndices.has(index)) continue;
+      if (existing[index] !== undefined) continue;
+      if (Math.abs(value) < threshold) continue;
+      mapPositions[String(index)] = normalizeStepPosition(
+        basePosition(index) + value,
+        total
+      );
+      interpolatedEntries += 1;
+    }
   }
 
   return {
@@ -279,6 +453,15 @@ function computeCalibrationPlan(
     stepPerFlap,
     threshold,
     measured,
+    anchors,
+    sampledEntries,
+    interpolatedEntries,
+    preservedEntries,
+    entryCount: Object.keys(mapPositions).length,
+    maxResidualSteps: measured.reduce(
+      (max, entry) => Math.max(max, Math.abs(anchors.get(entry.expected) || 0)),
+      0
+    ),
   };
 }
 
@@ -1298,6 +1481,20 @@ class SplitFlapCard extends HTMLElement {
         .calibration-status.error {
           color: var(--error-color, #e74c3c);
         }
+        .calibration-check {
+          display: flex;
+          gap: 7px;
+          align-items: center;
+          color: var(--secondary-text-color, #8e8e93);
+          font-size: 0.74rem;
+          line-height: 1.3;
+          cursor: pointer;
+        }
+        .calibration-check input {
+          flex: 0 0 auto;
+          margin: 0;
+          accent-color: var(--primary-color, #03a9f4);
+        }
         .calibration-row,
         .calibration-actions {
           display: flex;
@@ -1792,6 +1989,7 @@ class SplitFlapCard extends HTMLElement {
       samples: [],
       expectedIndex: 0,
       actualIndex: 0,
+      fillGaps: true,
       message: "",
       messageError: false,
     };
@@ -1820,6 +2018,11 @@ class SplitFlapCard extends HTMLElement {
   async _runCalibrationGoto(index) {
     if (!this._calibration) return;
     const moduleId = Number(this._calibration.moduleId);
+    // Default the actual flap to the expected one: when the module is already
+    // aligned the user only has to confirm and record the pair.
+    this._calibration.actualIndex = index;
+    this._detailsSignature = "";
+    this.render();
     this._setCalibrationMessage(`Moving to flap #${index}...`);
 
     try {
@@ -1913,12 +2116,18 @@ class SplitFlapCard extends HTMLElement {
       Number.isFinite(totalSteps) &&
       totalSteps > 0 &&
       Number.isFinite(homeOffset);
+    const currentMap = this._firstValue(
+      attrs,
+      MODULE_STAT_ALIASES.map_of_positions
+    );
     const plan = dataReady
       ? computeCalibrationPlan(
           calibration.samples,
           totalSteps,
           homeOffset,
-          64
+          64,
+          currentMap,
+          calibration.fillGaps
         )
       : null;
 
@@ -1932,9 +2141,25 @@ class SplitFlapCard extends HTMLElement {
     const hint = document.createElement("div");
     hint.className = "calibration-hint";
     hint.textContent =
-      "Send an expected flap, compare it with the physical reel, then record the actual flap. Repeat for several flaps before applying.";
+      "Press Home module first so the reel starts from a known reference, then send expected flaps, compare each with the physical reel and record the actual flap. Sample at least four flaps spread around the drum.";
 
     wrapper.append(heading, hint);
+
+    const fillRow = document.createElement("label");
+    fillRow.className = "calibration-check";
+    const fillInput = document.createElement("input");
+    fillInput.type = "checkbox";
+    fillInput.checked = calibration.fillGaps;
+    fillInput.addEventListener("change", () => {
+      calibration.fillGaps = fillInput.checked;
+      this._detailsSignature = "";
+      this.render();
+    });
+    const fillText = document.createElement("span");
+    fillText.textContent =
+      "Fill unsampled flaps by interpolating between measurements (needs 4+ samples)";
+    fillRow.append(fillInput, fillText);
+    wrapper.append(fillRow);
 
     if (!dataReady) {
       const warning = document.createElement("div");
@@ -2058,31 +2283,66 @@ class SplitFlapCard extends HTMLElement {
       summary.textContent =
         "Record at least one expected/actual pair to calculate the home offset.";
     } else {
-      const offsetLine = document.createElement("div");
       const adjustment = -plan.correction;
-      offsetLine.textContent = `Proposed home offset: ${homeOffset} → ${
-        plan.newHomeOffset
-      } (adjust ${adjustment > 0 ? "+" : ""}${adjustment} steps).`;
+      const flapCorrection =
+        plan.stepPerFlap > 0 ? adjustment / plan.stepPerFlap : 0;
+      const offsetLine = document.createElement("div");
+      offsetLine.textContent =
+        `Home offset: ${homeOffset} → ${plan.newHomeOffset} ` +
+        `(${adjustment > 0 ? "+" : ""}${adjustment} steps, ` +
+        `${flapCorrection > 0 ? "+" : ""}${flapCorrection.toFixed(2)} flaps).`;
       summary.append(offsetLine);
 
+      const detailLine = document.createElement("div");
+      const parts = [];
+      if (plan.sampledEntries > 0) {
+        parts.push(`${plan.sampledEntries} measured`);
+      }
+      if (plan.interpolatedEntries > 0) {
+        parts.push(`${plan.interpolatedEntries} interpolated`);
+      }
+      if (plan.preservedEntries > 0) {
+        parts.push(`${plan.preservedEntries} kept unchanged`);
+      }
+      detailLine.textContent =
+        parts.length > 0
+          ? `Position map: ${parts.join(", ")}.`
+          : "No position-map changes needed; the home offset explains the samples.";
+      summary.append(detailLine);
+
       const entries = Object.entries(plan.mapPositions);
-      const mapLine = document.createElement("div");
-      if (entries.length === 0) {
-        mapLine.textContent =
-          "No per-flap position-map entries needed; the global offset explains the samples.";
-      } else {
-        mapLine.textContent = `Position-map entries needed: ${entries.length}.`;
+      if (entries.length > 0) {
         const map = document.createElement("div");
         map.className = "calibration-map";
-        for (const [index, position] of entries) {
+        const shown = entries.slice(0, 32);
+        for (const [index, position] of shown) {
           const chip = document.createElement("span");
           chip.className = "detail-map-entry";
           chip.textContent = `#${index}: ${position}`;
           map.append(chip);
         }
-        summary.append(mapLine, map);
+        if (entries.length > shown.length) {
+          const more = document.createElement("span");
+          more.className = "detail-map-entry";
+          more.textContent = `+${entries.length - shown.length} more`;
+          map.append(more);
+        }
+        summary.append(map);
       }
-      if (entries.length === 0) summary.append(mapLine);
+
+      if (plan.measured.length < 2) {
+        const note = document.createElement("div");
+        note.className = "calibration-status";
+        note.textContent =
+          "Only one flap was sampled. Sample more flaps spread around the drum for a reliable result.";
+        summary.append(note);
+      } else if (calibration.fillGaps && plan.measured.length < 4) {
+        const note = document.createElement("div");
+        note.className = "calibration-status";
+        note.textContent =
+          "Gap filling starts at four measured flaps. Sample more flaps or turn it off.";
+        summary.append(note);
+      }
     }
     wrapper.append(summary);
 
@@ -2111,9 +2371,13 @@ class SplitFlapCard extends HTMLElement {
       );
       try {
         await this._callCalibrationService(payload);
-        this._setCalibrationMessage(
-          "Calibration applied. The module is re-homing; wait before testing again."
-        );
+        calibration.samples = [];
+        calibration.message =
+          "Calibration applied and samples cleared. Wait for the module to re-home, then measure a few flaps to verify. Re-send the display text to restore the board.";
+        calibration.messageError = false;
+        this._calibrationMessageNode = undefined;
+        this._detailsSignature = "";
+        this.render();
       } catch (err) {
         console.error("[splitflap-card] Calibration apply failed:", err);
         this._setCalibrationMessage(

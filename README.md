@@ -95,21 +95,34 @@ disconnected board no longer shows placeholder flaps.
 
 Click a module tile, then **Calibrate** in its details panel:
 
-1. Choose an **Expected flap** and press **Send expected**. Wait until the reel
+1. Press **Home module** first so the module starts from a known reference. Wait
+   until the reel has physically stopped.
+2. Choose an **Expected flap** and press **Send expected**. Wait until the reel
    has physically stopped.
-2. Compare the physical flap with the expected one, select the **Actual flap**
-   on the reel, and press **Record pair**.
-3. Repeat with flaps spread across the drum (for example 0, 8, 16, 24, 32, 40,
+3. Compare the physical flap with the expected one. The **Actual flap** selector
+   defaults to the expected flap; change it if the reel shows a different flap,
+   then press **Record pair**.
+4. Repeat with flaps spread across the drum (for example 0, 8, 16, 24, 32, 40,
    48, 56). More samples give a better result.
-4. The card shows the proposed home offset and any per-flap position-map
+5. The card shows the proposed home offset and any per-flap position-map
    entries. Press **Apply calibration**; the module re-homes with the new
    offset and then reports its updated diagnostics.
+6. Re-send the display text when you are done calibrating; the module re-homes
+   to flap 0 during the apply step.
 
-The global home-offset correction is the median signed flap error across all
-samples. Any remaining error for an individual flap becomes a position-map
-entry. Residuals smaller than half a flap are ignored. Existing map entries for
-flaps that were not sampled are preserved; **Clear position map** removes them
-all.
+The global home-offset correction is the median signed flap error across the
+samples. Per-flap map entries are only written for flaps that were measured and
+that still need an offset after the home correction. Before calculating a new
+entry, the card compares the sample against the target the module actually used
+(the existing map entry), so applying calibration repeatedly is safe: flaps
+that were calibrated earlier keep working instead of being overwritten with the
+default position.
+
+Entries for flaps that were not sampled are left untouched. **Fill unsampled
+flaps by interpolating between measurements** is enabled by default and fills
+the gaps between at least four measured flaps; turn it off if you only want the
+sampled flaps touched. **Clear position map** removes every entry while keeping
+the home offset.
 
 This workflow uses the module's existing RS485 command set, so no slave
 reflash is required. The updated master firmware is required.
