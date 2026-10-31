@@ -8,7 +8,7 @@
  * dialog, but the card works without per-module entities.
  */
 
-const SPLITFLAP_CARD_VERSION = "1.6.6";
+const SPLITFLAP_CARD_VERSION = "1.6.7";
 const MODULE_ID_ATTR = "splitflap_module_id";
 const MODULE_PREFIX_ATTR = "splitflap_prefix";
 const LAYOUT_STORAGE_PREFIX = "splitflap-card-layout:";
@@ -1558,6 +1558,23 @@ class SplitFlapCard extends HTMLElement {
         .bct-skip {
           font-size: 0.75em;
         }
+        .bct-step-amt {
+          font-size: 0.75em;
+          padding: 2px 4px;
+          border-radius: 4px;
+          border: 1px solid var(--divider-color, #383842);
+          background: var(--card-background-color, #1c1c22);
+          color: inherit;
+        }
+        .bct-try {
+          font-size: 0.8em;
+          padding: 3px 10px;
+          margin-top: 2px;
+        }
+        .bct-controls button {
+          font-size: 0.75em;
+          padding: 3px 8px;
+        }
         .board-calibration-progress {
           text-align: center;
           font-weight: 600;
@@ -2367,26 +2384,38 @@ class SplitFlapCard extends HTMLElement {
         const flapControls = document.createElement("div");
         flapControls.className = "bct-controls";
         const flapLeft = document.createElement("button");
-        flapLeft.textContent = "◀ flap";
+        flapLeft.textContent = "◀ 1 flap";
         const flapRight = document.createElement("button");
-        flapRight.textContent = "flap ▶";
+        flapRight.textContent = "1 flap ▶";
         flapLeft.addEventListener("click", () => this._boardNudge(m.id, -1, 0));
         flapRight.addEventListener("click", () => this._boardNudge(m.id, +1, 0));
 
         const stepControls = document.createElement("div");
         stepControls.className = "bct-controls bct-step";
-        for (const amt of [1, 10, 100]) {
-          const sl = document.createElement("button");
-          sl.textContent = `◀${amt}`;
-          const sr = document.createElement("button");
-          sr.textContent = `${amt}▶`;
-          sl.addEventListener("click", () => this._boardNudge(m.id, 0, -amt));
-          sr.addEventListener("click", () => this._boardNudge(m.id, 0, +amt));
-          stepControls.append(sl, sr);
+        const stepAmt = document.createElement("select");
+        stepAmt.className = "bct-step-amt";
+        for (const amt of [1, 10, 50]) {
+          const opt = document.createElement("option");
+          opt.value = String(amt);
+          opt.textContent = `${amt}`;
+          stepAmt.append(opt);
         }
+        stepAmt.value = "10";
+        const stepLeft = document.createElement("button");
+        stepLeft.textContent = "◀";
+        const stepRight = document.createElement("button");
+        stepRight.textContent = "▶";
+        stepLeft.addEventListener("click", () => this._boardNudge(m.id, 0, -Number(stepAmt.value)));
+        stepRight.addEventListener("click", () => this._boardNudge(m.id, 0, +Number(stepAmt.value)));
 
+        const tryBtn = document.createElement("button");
+        tryBtn.className = "btn btn-secondary bct-try";
+        tryBtn.textContent = "Try";
+        tryBtn.addEventListener("click", () => this._boardTry(m.id));
+
+        stepControls.append(stepLeft, stepAmt, stepRight);
         flapControls.append(flapLeft, flapRight);
-        tile.append(idSpan, refChar, counter, flapControls, stepControls);
+        tile.append(idSpan, refChar, counter, flapControls, stepControls, tryBtn);
         grid.append(tile);
       }
       body.append(grid);
@@ -2403,8 +2432,8 @@ class SplitFlapCard extends HTMLElement {
     }
   }
 
-  async _boardNudge(moduleId, flapDelta, stepDelta) {
-    if (!this._boardCalibration || !this._hass) return;
+  _boardNudge(moduleId, flapDelta, stepDelta) {
+    if (!this._boardCalibration) return;
     const bc = this._boardCalibration;
     const modules = this._boardModules();
     const m = modules.find((x) => String(x.id) === String(moduleId));
@@ -2416,8 +2445,20 @@ class SplitFlapCard extends HTMLElement {
     const cur = bc.currentStep[moduleId] !== undefined ? bc.currentStep[moduleId] : Math.round(bc.referenceIndex * stepPerFlap);
     const delta = Math.round(flapDelta * stepPerFlap + stepDelta);
     bc.currentStep[moduleId] = cur + delta;
+    this._renderBoardCalibration();
+  }
 
-    const finalTarget = ((bc.currentStep[moduleId] % totalSteps) + totalSteps) % totalSteps;
+  async _boardTry(moduleId) {
+    if (!this._boardCalibration || !this._hass) return;
+    const bc = this._boardCalibration;
+    const modules = this._boardModules();
+    const m = modules.find((x) => String(x.id) === String(moduleId));
+    if (!m) return;
+    const attrs = this._boardModuleAttrs(m);
+    const totalSteps = Number(this._firstValue(attrs, MODULE_STAT_ALIASES.total_steps)) || 4096;
+
+    const cur = bc.currentStep[moduleId] !== undefined ? bc.currentStep[moduleId] : 0;
+    const finalTarget = ((cur % totalSteps) + totalSteps) % totalSteps;
 
     try {
       await this._hass.callService("splitflap", "calibrate", {
@@ -2426,7 +2467,7 @@ class SplitFlapCard extends HTMLElement {
         steps: finalTarget,
       });
     } catch (err) {
-      console.error("[splitflap-card] board nudge failed:", err);
+      console.error("[splitflap-card] board try failed:", err);
     }
     this._renderBoardCalibration();
   }
