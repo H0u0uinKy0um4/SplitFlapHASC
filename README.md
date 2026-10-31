@@ -11,6 +11,11 @@ A complete Home Assistant integration and interactive Lovelace card for DIY RS48
 - **Full HACS Support**: Install directly via HACS as a Custom Integration.
 - **UI Config Flow**: Easily configure topic prefixes directly in Home Assistant (Settings &rarr; Devices & Services &rarr; Add Integration &rarr; SplitFlap).
 - **Auto-Discovered Device**: Master ESP32 and entities automatically grouped into a single SplitFlap device.
+- **Last Known State**: module count, per-module stats/flaps and display text are
+  persisted in Home Assistant storage and restored at startup, so the card and
+  entities stay populated while the ESP32 is powered off. Master status correctly
+  stays `offline` until fresh MQTT data arrives. Deleting the integration entry
+  also deletes the saved snapshot.
 - **Interactive Split-Flap Lovelace Card**:
   - Authentic split-flap letter tiles.
   - Responsive tiles and labels that scale with the number of modules.

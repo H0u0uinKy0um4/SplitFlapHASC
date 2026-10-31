@@ -114,6 +114,8 @@ class SplitFlapStatusSensor(CoordinatorEntity[SplitFlapCoordinator], SensorEntit
         """Return extra state attributes."""
         return {
             "last_message": self.coordinator.data.get("last_message", ""),
+            "restored": bool(self.coordinator.data.get("restored", False)),
+            "last_saved": self.coordinator.data.get("last_saved"),
             "topic_prefix": self.coordinator.prefix,
         }
 

@@ -11,6 +11,10 @@ FRONTEND_URL_PATH: Final = "/splitflap/splitflap-card.js"
 
 CONF_TOPIC_PREFIX: Final = "topic_prefix"
 
+# Last known state persistence (Home Assistant .storage).
+STORAGE_VERSION: Final = 1
+STORAGE_SAVE_DELAY: Final = 10
+
 PLATFORMS: Final = [
     Platform.SENSOR,
     Platform.BUTTON,

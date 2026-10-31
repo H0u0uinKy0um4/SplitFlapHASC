@@ -11,11 +11,26 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.event import async_call_later
+from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
+from homeassistant.util import dt as dt_util
 
-from .const import CONF_TOPIC_PREFIX, DEFAULT_NAME, DEFAULT_TOPIC_PREFIX, DOMAIN
+from .const import (
+    CONF_TOPIC_PREFIX,
+    DEFAULT_NAME,
+    DEFAULT_TOPIC_PREFIX,
+    DOMAIN,
+    STORAGE_SAVE_DELAY,
+    STORAGE_VERSION,
+)
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def storage_key(entry: ConfigEntry) -> str:
+    """Return the storage key for a config entry's saved state."""
+    return f"{DOMAIN}.{entry.entry_id}"
+
 
 _NUMERIC_ID = re.compile(r"^\d+$")
 
@@ -379,6 +394,9 @@ class SplitFlapCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._mqtt_unsub = None
         self._offline_timer: CALLBACK_TYPE | None = None
         self._offline_timeout_seconds: int = 60
+        self._store: Store[dict[str, Any]] = Store(
+            hass, STORAGE_VERSION, storage_key(entry)
+        )
 
     @property
     def device_info(self) -> DeviceInfo:
@@ -396,8 +414,71 @@ class SplitFlapCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             sw_version="1.2",
         )
 
+    def _state_snapshot(self) -> dict[str, Any]:
+        """Return the durable part of the coordinator state."""
+        modules = self.data.get("modules")
+        return {
+            "modules": modules if isinstance(modules, dict) else {},
+            "modules_count": _coerce_count(self.data.get("modules_count"), 0),
+            "last_message": str(self.data.get("last_message") or ""),
+            "saved_at": dt_util.now(dt_util.UTC).isoformat(),
+        }
+
+    @callback
+    def _schedule_save(self) -> None:
+        """Persist the last known state, debounced to avoid write storms."""
+        self._store.async_delay_save(self._state_snapshot, STORAGE_SAVE_DELAY)
+
+    async def _async_restore_state(self) -> None:
+        """Load the last known state saved before Home Assistant stopped."""
+        try:
+            stored = await self._store.async_load()
+        except Exception:  # noqa: BLE001 - restore must never block setup
+            _LOGGER.exception("Could not restore saved SplitFlap state")
+            return
+
+        if not isinstance(stored, dict):
+            return
+
+        raw_modules = stored.get("modules")
+        modules = (
+            normalize_modules(raw_modules)
+            if isinstance(raw_modules, (dict, list))
+            else {}
+        )
+        stored_count = _coerce_count(stored.get("modules_count"), 0)
+        modules_count = len(modules) if modules else stored_count
+        last_message = str(stored.get("last_message") or "")
+
+        if not modules and not modules_count and not last_message:
+            return
+
+        self.async_set_updated_data(
+            {
+                **self.data,
+                "modules": modules,
+                "modules_count": modules_count,
+                "last_message": last_message,
+                # The hardware is not connected yet. Report offline until a
+                # fresh MQTT payload arrives, but keep the remembered data.
+                "status": "offline",
+                "restored": True,
+                "last_saved": stored.get("saved_at"),
+            }
+        )
+        _LOGGER.info(
+            "Restored last known SplitFlap state for %s: %s module(s), text %r",
+            self.prefix,
+            modules_count,
+            last_message,
+        )
+
     async def async_setup(self) -> None:
         """Subscribe to status updates from the ESP32."""
+        # Restore before entities are created so the integration is useful
+        # even when the ESP32 is powered off or Home Assistant just restarted.
+        await self._async_restore_state()
+
         status_topic = f"{self.prefix}/status"
 
         @callback
@@ -432,6 +513,15 @@ class SplitFlapCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             state = payload["state"]
             new_data["status"] = str(state) if state is not None else "online"
 
+        # The firmware's offline last-will payload contains empty modules and a
+        # zero count. Treat that as a disconnect, not as "the bus is empty", so
+        # the last known module stats survive until real data arrives again.
+        offline = str(new_data.get("status", "")).lower() in {
+            "offline",
+            "disconnected",
+            "unavailable",
+        }
+
         if "text" in payload and isinstance(payload["text"], str):
             new_data["last_message"] = payload["text"]
 
@@ -439,27 +529,38 @@ class SplitFlapCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             raw_modules = payload["modules"]
             if isinstance(raw_modules, (list, dict)):
                 modules = normalize_modules(raw_modules)
-                new_data["modules"] = modules
                 # Prefer the real number of reported modules over the count
                 # field, which can be stale in older firmware. Only fall back
                 # to the count when no module details were provided.
                 reported_count = _coerce_count(
                     payload.get("modules_count"), len(modules)
                 )
-                new_data["modules_count"] = (
-                    len(modules) if modules else reported_count
-                )
+                if modules or not offline or not new_data.get("modules"):
+                    new_data["modules"] = modules
+                    new_data["modules_count"] = (
+                        len(modules) if modules else reported_count
+                    )
             else:
                 _LOGGER.warning(
                     "Ignoring invalid modules payload from SplitFlap: %s",
                     raw_modules,
                 )
         elif "modules_count" in payload:
-            new_data["modules_count"] = _coerce_count(
+            modules_count = _coerce_count(
                 payload["modules_count"], new_data.get("modules_count", 0)
             )
+            if modules_count > 0 or not offline or not new_data.get("modules"):
+                new_data["modules_count"] = modules_count
+
+        # Any live payload supersedes state restored from storage. Offline
+        # last-will messages keep the restored marker so consumers can tell the
+        # data is still the last known snapshot.
+        if not offline:
+            new_data["restored"] = False
+            new_data.pop("last_saved", None)
 
         self.async_set_updated_data(new_data)
+        self._schedule_save()
         _LOGGER.debug("SplitFlap state updated: %s", new_data)
 
         # Reset 60s inactivity timer
@@ -492,6 +593,11 @@ class SplitFlapCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     async def async_unload(self) -> None:
         """Clean up MQTT subscription and timers when component unloads."""
+        try:
+            await self._store.async_save(self._state_snapshot())
+        except Exception:  # noqa: BLE001 - unloading must always continue
+            _LOGGER.exception("Could not save SplitFlap state before unloading")
+
         if self._offline_timer is not None:
             self._offline_timer()
             self._offline_timer = None
@@ -547,6 +653,7 @@ class SplitFlapCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             updated["modules"] = new_modules
 
         self.async_set_updated_data(updated)
+        self._schedule_save()
 
         topic = f"{self.prefix}/command/display"
         payload = json.dumps({"modules": payload_modules})

@@ -8,9 +8,16 @@ from typing import Any
 from homeassistant.components.frontend import add_extra_js_url
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.storage import Store
 
-from .const import DOMAIN, FRONTEND_URL_PATH, FRONTEND_VERSION, PLATFORMS
-from .coordinator import SplitFlapCoordinator
+from .const import (
+    DOMAIN,
+    FRONTEND_URL_PATH,
+    FRONTEND_VERSION,
+    PLATFORMS,
+    STORAGE_VERSION,
+)
+from .coordinator import SplitFlapCoordinator, storage_key
 from .services import (
     SERVICE_SCAN,
     SERVICE_SEND_TEXT,
@@ -60,6 +67,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 async def async_reload_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
     """Reload config entry on options update."""
     await hass.config_entries.async_reload(entry.entry_id)
+
+
+async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Remove persisted state when the config entry is deleted."""
+    await Store(hass, STORAGE_VERSION, storage_key(entry)).async_remove()
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
