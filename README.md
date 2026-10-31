@@ -91,7 +91,19 @@ The card exposes two refresh actions:
 A board that reports zero modules renders no tiles, so an empty or
 disconnected board no longer shows placeholder flaps.
 
-### Calibrating a module
+### Calibrating (board-level, recommended)
+
+Click **Calibrate board** on the display. All modules show the same reference
+flap (start with space to fix the home offset). Each module tile has ◀/▶
+buttons for coarse (flap) and fine (step) nudging. Nudge until the tile turns
+green, then **Apply all corrections**. Use the stride selector to measure every
+Nth flap, or **Measure all** for a full pass. Per-module **Skip** checkboxes
+exclude inaccessible modules.
+
+### Calibrating (advanced, per-module)
+
+Click a module tile, then **Advanced calibration** for the detailed single-flap
+flow with dropdowns and manual sample recording.
 
 Click a module tile, then **Calibrate** in its details panel. Calibration is
 split into two independent steps so the global Home reference and the per-flap

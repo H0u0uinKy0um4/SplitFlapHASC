@@ -8,7 +8,7 @@
  * dialog, but the card works without per-module entities.
  */
 
-const SPLITFLAP_CARD_VERSION = "1.6.2";
+const SPLITFLAP_CARD_VERSION = "1.6.3";
 const MODULE_ID_ATTR = "splitflap_module_id";
 const MODULE_PREFIX_ATTR = "splitflap_prefix";
 const LAYOUT_STORAGE_PREFIX = "splitflap-card-layout:";
@@ -503,6 +503,7 @@ class SplitFlapCard extends HTMLElement {
     this._modulesCount = 0;
     this._calibration = null;
     this._calibrationMessageNode = undefined;
+    this._boardCalibration = null;
     this._refs = {};
 
     // Attached once: the shadow root survives skeleton rebuilds, so adding this
@@ -1474,6 +1475,87 @@ class SplitFlapCard extends HTMLElement {
         .module-details-actions .btn-secondary {
           flex: 0 0 auto;
         }
+        .board-calibration {
+          position: fixed;
+          inset: 0;
+          background: rgba(0, 0, 0, 0.7);
+          z-index: 1000;
+          display: flex;
+          flex-direction: column;
+          padding: 20px;
+          overflow: auto;
+        }
+        .board-calibration-header {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          margin-bottom: 12px;
+        }
+        .board-calibration-title {
+          font-size: 1.2em;
+          font-weight: 600;
+        }
+        .board-calibration-close {
+          font-size: 1.5em;
+          background: none;
+          border: none;
+          color: inherit;
+          cursor: pointer;
+        }
+        .board-calibration-topbar {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 8px;
+          align-items: center;
+          margin-bottom: 12px;
+        }
+        .board-calibration-grid {
+          display: grid;
+          grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+          gap: 10px;
+          margin-bottom: 12px;
+        }
+        .board-calibration-tile {
+          display: flex;
+          flex-direction: column;
+          gap: 4px;
+          padding: 8px;
+          border-radius: 8px;
+          border: 2px solid var(--divider-color, #383842);
+          align-items: center;
+        }
+        .board-calibration-tile.ok {
+          border-color: #2e7d32;
+          background: rgba(46, 125, 50, 0.1);
+        }
+        .board-calibration-tile.off {
+          border-color: #c62828;
+          background: rgba(198, 40, 40, 0.1);
+        }
+        .bct-char {
+          font-size: 2em;
+          font-weight: 700;
+        }
+        .bct-counter {
+          font-size: 0.8em;
+          opacity: 0.8;
+        }
+        .bct-controls {
+          display: flex;
+          gap: 4px;
+        }
+        .bct-controls button {
+          font-size: 0.75em;
+          padding: 2px 6px;
+        }
+        .bct-skip {
+          font-size: 0.75em;
+        }
+        .board-calibration-progress {
+          text-align: center;
+          font-weight: 600;
+          margin-top: 8px;
+        }
         .calibration {
           grid-column: 1 / -1;
           display: flex;
@@ -1757,12 +1839,23 @@ class SplitFlapCard extends HTMLElement {
           <div class="board-header">
             <span>Display Preview</span>
             <span id="modulesCountSpan"></span>
+            <button id="boardCalibrateBtn" class="btn btn-secondary" type="button">
+              Calibrate board
+            </button>
           </div>
           <div class="flap-row" id="flapTiles"></div>
           <div class="board-footer" id="boardFooter"></div>
         </div>
 
         <div class="module-details-backdrop" id="moduleDetailsBackdrop" hidden></div>
+        <div class="board-calibration" id="boardCalibration" hidden>
+          <div class="board-calibration-header">
+            <span class="board-calibration-title">Board calibration</span>
+            <button class="board-calibration-close" id="boardCalibrationClose" type="button">&times;</button>
+          </div>
+          <div class="board-calibration-body" id="boardCalibrationBody"></div>
+        </div>
+
         <div class="module-details" id="moduleDetails" hidden>
           <div class="module-details-header">
             <span class="module-details-title" id="moduleDetailsTitle"></span>
@@ -1782,7 +1875,7 @@ class SplitFlapCard extends HTMLElement {
               id="moduleDetailsCalibrate"
               type="button"
             >
-              Calibrate
+              Advanced calibration
             </button>
             <button
               class="btn btn-secondary"
@@ -1838,6 +1931,7 @@ class SplitFlapCard extends HTMLElement {
       title: this.shadowRoot.getElementById("cardTitle"),
       statusBadge: this.shadowRoot.getElementById("statusBadge"),
       modulesCount: this.shadowRoot.getElementById("modulesCountSpan"),
+      boardCalibrateBtn: this.shadowRoot.getElementById("boardCalibrateBtn"),
       flapTiles: this.shadowRoot.getElementById("flapTiles"),
       boardFooter: this.shadowRoot.getElementById("boardFooter"),
       input: this.shadowRoot.getElementById("textInput"),
@@ -1853,6 +1947,9 @@ class SplitFlapCard extends HTMLElement {
       ratioInput: this.shadowRoot.getElementById("ratioInput"),
       gapInput: this.shadowRoot.getElementById("gapInput"),
       layoutResetBtn: this.shadowRoot.getElementById("layoutResetBtn"),
+      boardCalibration: this.shadowRoot.getElementById("boardCalibration"),
+      boardCalibrationBody: this.shadowRoot.getElementById("boardCalibrationBody"),
+      boardCalibrationClose: this.shadowRoot.getElementById("boardCalibrationClose"),
       moduleDetails: this.shadowRoot.getElementById("moduleDetails"),
       moduleDetailsBackdrop: this.shadowRoot.getElementById(
         "moduleDetailsBackdrop"
@@ -1933,6 +2030,17 @@ class SplitFlapCard extends HTMLElement {
     this._refs.moduleDetailsClose.addEventListener("click", () => {
       this._closeModuleDetails();
     });
+
+    if (this._refs.boardCalibrateBtn) {
+      this._refs.boardCalibrateBtn.addEventListener("click", () =>
+        this._toggleBoardCalibration()
+      );
+    }
+    if (this._refs.boardCalibrationClose) {
+      this._refs.boardCalibrationClose.addEventListener("click", () =>
+        this._closeBoardCalibration()
+      );
+    }
 
     this._refs.moduleDetailsBackdrop.addEventListener("click", () => {
       this._closeModuleDetails();
@@ -2019,6 +2127,325 @@ class SplitFlapCard extends HTMLElement {
     this._calibrationMessageNode = undefined;
     this._detailsSignature = "";
     this.render();
+  }
+
+  _toggleBoardCalibration() {
+    if (this._boardCalibration) {
+      this._closeBoardCalibration();
+      return;
+    }
+    const modules = this._collectModules(
+      this._hass ? this._hass.states[this._config?.modules_sensor] : null,
+      this._hass ? this._hass.states[this._config?.status_sensor] : null
+    );
+    const targetSteps = {};
+    for (const m of modules) targetSteps[m.id] = 0;
+    this._boardCalibration = {
+      active: true,
+      referenceIndex: 0,
+      stride: 8,
+      skip: {},
+      targetSteps,
+      message: "Start with space (index 0) to fix home offset first.",
+      messageError: false,
+    };
+    // Send display text with the reference flap on all modules.
+    this._boardCalibrationSendReference();
+    this._renderBoardCalibration();
+  }
+
+  _closeBoardCalibration() {
+    this._boardCalibration = null;
+    const panel = this._refs.boardCalibration;
+    if (panel) panel.hidden = true;
+    this.render();
+  }
+
+  _boardModules() {
+    if (!this._hass || !this._config) return [];
+    const modulesState = this._config.modules_sensor
+      ? this._hass.states[this._config.modules_sensor]
+      : null;
+    const statusState = this._config.status_sensor
+      ? this._hass.states[this._config.status_sensor]
+      : null;
+    return this._collectModules(modulesState, statusState);
+  }
+
+  _boardModuleAttrs(module) {
+    const stateObj = module.entityId ? this._hass.states[module.entityId] : null;
+    return stateObj && stateObj.attributes
+      ? stateObj.attributes
+      : module.raw && typeof module.raw === "object"
+        ? module.raw
+        : {};
+  }
+
+  async _boardCalibrationSendReference() {
+    if (!this._boardCalibration || !this._hass) return;
+    const bc = this._boardCalibration;
+    const modules = this._boardModules();
+    // Send the reference character to every module via the integration's
+    // send_text service (repeats the character across all modules).
+    const refChar = this._flapCharForIndex(bc.referenceIndex, modules[0] || {});
+    const text = modules.map(() => refChar).join("");
+    try {
+      await this._hass.callService("splitflap", "send_text", { text });
+    } catch (err) {
+      console.error("[splitflap-card] Board calibration send_text failed:", err);
+    }
+  }
+
+  _flapCharForIndex(index, module) {
+    const attrs = this._boardModuleAttrs(module);
+    const flapList = this._firstValue(attrs, MODULE_STAT_ALIASES.flap_list);
+    const chars =
+      typeof flapList === "string"
+        ? Array.from(flapList)
+        : Array.isArray(flapList)
+          ? flapList
+          : [];
+    return chars[index] !== undefined && chars[index] !== null && chars[index] !== ""
+      ? chars[index]
+      : " ";
+  }
+
+  _renderBoardCalibration() {
+    const panel = this._refs.boardCalibration;
+    const body = this._refs.boardCalibrationBody;
+    if (!panel || !body || !this._boardCalibration) return;
+    panel.hidden = false;
+    const bc = this._boardCalibration;
+    const modules = this._boardModules();
+
+    body.innerHTML = "";
+
+    // Top bar
+    const topBar = document.createElement("div");
+    topBar.className = "board-calibration-topbar";
+
+    const refLabel = document.createElement("label");
+    refLabel.textContent = "Reference flap: ";
+    const refSelect = document.createElement("select");
+    for (let i = 0; i < 64; i++) {
+      const opt = document.createElement("option");
+      opt.value = String(i);
+      const m = modules[0];
+      opt.textContent = m ? this._flapLabel(
+        typeof (this._firstValue(this._boardModuleAttrs(m), MODULE_STAT_ALIASES.flap_list)) === "string"
+          ? Array.from(this._firstValue(this._boardModuleAttrs(m), MODULE_STAT_ALIASES.flap_list))
+          : [],
+        i
+      ) : `#${i}`;
+      refSelect.append(opt);
+    }
+    refSelect.value = String(bc.referenceIndex);
+    refSelect.addEventListener("change", () => {
+      bc.referenceIndex = Number(refSelect.value);
+      bc.targetSteps = {};
+      for (const m of modules) { bc.targetSteps[m.id] = 0; }
+      this._boardCalibrationSendReference();
+      this._renderBoardCalibration();
+    });
+
+    const strideLabel = document.createElement("label");
+    strideLabel.textContent = " Stride: ";
+    const strideSelect = document.createElement("select");
+    for (const s of [1, 2, 4, 8]) {
+      const opt = document.createElement("option");
+      opt.value = String(s);
+      opt.textContent = s === 1 ? "All flaps" : `Every ${s}`;
+      strideSelect.append(opt);
+    }
+    strideSelect.value = String(bc.stride);
+    strideSelect.addEventListener("change", () => {
+      bc.stride = Number(strideSelect.value);
+      this._renderBoardCalibration();
+    });
+
+    const measureAllBtn = document.createElement("button");
+    measureAllBtn.className = "btn btn-secondary";
+    measureAllBtn.textContent = "Measure all";
+    measureAllBtn.addEventListener("click", () => {
+      bc.stride = 1;
+      strideSelect.value = "1";
+      this._renderBoardCalibration();
+    });
+
+    const applyBtn = document.createElement("button");
+    applyBtn.className = "btn btn-primary";
+    applyBtn.textContent = "Apply all corrections";
+    applyBtn.addEventListener("click", () => this._boardCalibrationApplyAll());
+
+    const exitBtn = document.createElement("button");
+    exitBtn.className = "btn btn-secondary";
+    exitBtn.textContent = "Exit";
+    exitBtn.addEventListener("click", () => this._closeBoardCalibration());
+
+    refLabel.append(refSelect);
+    strideLabel.append(strideSelect);
+    topBar.append(refLabel, strideLabel, measureAllBtn, applyBtn, exitBtn);
+    body.append(topBar);
+
+    // Hint
+    const hint = document.createElement("div");
+    hint.className = "calibration-hint";
+    hint.textContent = bc.message || "Start with space (index 0) to fix home offset first. Use ◀/▶ flap for coarse, step for fine.";
+    body.append(hint);
+
+    // Module tiles
+    const grid = document.createElement("div");
+    grid.className = "board-calibration-grid";
+    let aligned = 0;
+    let total = 0;
+    for (const m of modules) {
+      if (bc.skip[m.id]) continue;
+      total += 1;
+      const attrs = this._boardModuleAttrs(m);
+      const totalSteps = Number(this._firstValue(attrs, MODULE_STAT_ALIASES.total_steps)) || 4096;
+      const stepPerFlap = totalSteps / 64;
+      const targetStep = bc.targetSteps[m.id] || 0;
+      const nudge = Math.trunc(targetStep / stepPerFlap);
+      const nudgeSteps = targetStep - nudge * stepPerFlap;
+      if (targetStep === 0) aligned += 1;
+
+      const tile = document.createElement("div");
+      tile.className = "board-calibration-tile";
+      const off = nudge !== 0 || nudgeSteps !== 0;
+      tile.classList.add(off ? "off" : "ok");
+
+      const idSpan = document.createElement("span");
+      idSpan.className = "bct-id";
+      idSpan.textContent = `#${m.id}`;
+
+      const refChar = document.createElement("span");
+      refChar.className = "bct-char";
+      refChar.textContent = this._flapCharForIndex(bc.referenceIndex, m);
+
+      const counter = document.createElement("span");
+      counter.className = "bct-counter";
+      const parts = [];
+      if (nudge !== 0) parts.push(`${nudge > 0 ? "+" : ""}${nudge} flaps`);
+      if (nudgeSteps !== 0) parts.push(`${nudgeSteps > 0 ? "+" : ""}${nudgeSteps} steps`);
+      counter.textContent = parts.length ? parts.join(", ") : "aligned";
+
+      const flapControls = document.createElement("div");
+      flapControls.className = "bct-controls";
+      const flapLeft = document.createElement("button");
+      flapLeft.textContent = "◀ flap";
+      const flapRight = document.createElement("button");
+      flapRight.textContent = "flap ▶";
+      flapLeft.addEventListener("click", () => this._boardNudge(m.id, -1, 0));
+      flapRight.addEventListener("click", () => this._boardNudge(m.id, +1, 0));
+
+      const stepControls = document.createElement("div");
+      stepControls.className = "bct-controls bct-step";
+      const stepLeft = document.createElement("button");
+      stepLeft.textContent = "◀ step";
+      const stepRight = document.createElement("button");
+      stepRight.textContent = "step ▶";
+      stepLeft.addEventListener("click", () => this._boardNudge(m.id, 0, -1));
+      stepRight.addEventListener("click", () => this._boardNudge(m.id, 0, +1));
+
+      const skipLabel = document.createElement("label");
+      skipLabel.className = "bct-skip";
+      const skipInput = document.createElement("input");
+      skipInput.type = "checkbox";
+      skipInput.checked = !!bc.skip[m.id];
+      skipInput.addEventListener("change", () => {
+        bc.skip[m.id] = skipInput.checked;
+        this._renderBoardCalibration();
+      });
+      skipLabel.append(skipInput, document.createTextNode(" skip"));
+
+      flapControls.append(flapLeft, flapRight);
+      stepControls.append(stepLeft, stepRight);
+      tile.append(idSpan, refChar, counter, flapControls, stepControls, skipLabel);
+      grid.append(tile);
+    }
+    body.append(grid);
+
+    const progress = document.createElement("div");
+    progress.className = "board-calibration-progress";
+    progress.textContent = `${aligned} / ${total} modules aligned`;
+    body.append(progress);
+  }
+
+  async _boardNudge(moduleId, flapDelta, stepDelta) {
+    if (!this._boardCalibration || !this._hass) return;
+    const bc = this._boardCalibration;
+    const modules = this._boardModules();
+    const m = modules.find((x) => String(x.id) === String(moduleId));
+    if (!m) return;
+    const attrs = this._boardModuleAttrs(m);
+    const totalSteps = Number(this._firstValue(attrs, MODULE_STAT_ALIASES.total_steps)) || 4096;
+    const stepPerFlap = totalSteps / 64;
+
+    const delta = Math.round(flapDelta * stepPerFlap + stepDelta);
+    const cur = bc.targetSteps[moduleId] || 0;
+    bc.targetSteps[moduleId] = cur + delta;
+
+    const target = ((bc.targetSteps[moduleId] % totalSteps) + totalSteps) % totalSteps;
+    try {
+      await this._hass.callService("splitflap", "calibrate", {
+        action: "step",
+        module_id: Number(moduleId),
+        steps: target,
+      });
+    } catch (err) {
+      console.error("[splitflap-card] board nudge failed:", err);
+    }
+    this._renderBoardCalibration();
+  }
+
+  async _boardCalibrationApplyAll() {
+    if (!this._boardCalibration || !this._hass) return;
+    const bc = this._boardCalibration;
+    const modules = this._boardModules();
+    const refIndex = bc.referenceIndex;
+    const isHomePass = refIndex === 0;
+
+    for (const m of modules) {
+      if (bc.skip[m.id]) continue;
+      const targetStep = bc.targetSteps[m.id] || 0;
+      if (targetStep === 0) continue;
+
+      const attrs = this._boardModuleAttrs(m);
+      const totalSteps = Number(this._firstValue(attrs, MODULE_STAT_ALIASES.total_steps)) || 4096;
+      const homeOffset = Number(this._firstValue(attrs, MODULE_STAT_ALIASES.home_offset)) || 0;
+      const stepPerFlap = totalSteps / 64;
+      const correctionSteps = targetStep;
+
+      try {
+        if (isHomePass) {
+          const newOffset = ((homeOffset + correctionSteps) % totalSteps + totalSteps) % totalSteps;
+          await this._hass.callService("splitflap", "calibrate", {
+            action: "apply",
+            module_id: Number(m.id),
+            home_offset: newOffset,
+            clear_map: true,
+          });
+        } else {
+          const basePos = Math.floor((refIndex * totalSteps) / 64);
+          const newTarget = ((basePos + correctionSteps) % totalSteps + totalSteps) % totalSteps;
+          await this._hass.callService("splitflap", "calibrate", {
+            action: "apply",
+            module_id: Number(m.id),
+            positions: { [String(refIndex)]: newTarget },
+          });
+        }
+      } catch (err) {
+        console.error("[splitflap-card] board apply failed for module", m.id, err);
+      }
+    }
+
+    // Reset nudges
+    for (const m of modules) {
+      bc.targetSteps[m.id] = 0;
+    }
+    bc.message = "Corrections applied. Re-home and verify, or change reference flap for per-flap mapping.";
+    bc.messageError = false;
+    this._renderBoardCalibration();
   }
 
   async _callCalibrationService(payload) {

@@ -63,6 +63,7 @@ calibrate:
             - apply
             - clear_map
             - refresh
+            - step
     module_id:
       name: Module ID
       description: RS485 id of the module to calibrate.
@@ -108,6 +109,17 @@ calibrate:
       required: false
       selector:
         object:
+    steps:
+      name: Step target
+      description: >-
+        Absolute step position for the `step` action (0-based, modulo total steps).
+      required: false
+      example: 64
+      selector:
+        number:
+          min: 0
+          max: 65534
+          mode: box
     clear_map:
       name: Clear position map
       description: >-

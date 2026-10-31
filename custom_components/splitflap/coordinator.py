@@ -781,6 +781,7 @@ class SplitFlapCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         home_offset: int | None = None,
         positions: dict[str, Any] | None = None,
         clear_map: bool = False,
+        steps: int | None = None,
     ) -> None:
         """Send a calibration command to one module.
 
@@ -851,6 +852,9 @@ class SplitFlapCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 payload["index"] = int(index)
             elif flap:
                 payload["flap"] = str(flap)[0]
+        elif action == "step":
+            if steps is not None:
+                payload["steps"] = int(steps)
         elif action == "apply":
             if home_offset is not None:
                 payload["home_offset"] = int(home_offset)
