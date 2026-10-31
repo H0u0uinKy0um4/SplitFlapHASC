@@ -37,7 +37,12 @@ A complete Home Assistant integration and interactive Lovelace card for DIY RS48
     converts it into an explicit character target for every known module,
     optionally starting at a specific module position with `start`.
   - `splitflap.sync`: Request the ESP32 to publish current module flaps and state.
-  - `splitflap.scan`: Trigger an RS485 bus scan to detect connected modules.
+  - `splitflap.scan`: Discover modules by scanning every possible RS485 id
+    (1-255). This replaces the known module list, so use it after adding or
+    removing hardware.
+  - `splitflap.update`: Refresh flaps and diagnostics for the modules that are
+    already known. Much faster than a full scan; it never adds or removes
+    modules.
 - **Entities Provided**:
   - `text.splitflap_display_text`: Display text input.
   - `sensor.splitflap_master_status`: Master ESP32 connection state (`online`, `offline`).
@@ -46,7 +51,8 @@ A complete Home Assistant integration and interactive Lovelace card for DIY RS48
     current flap character; attributes include module state and position. These
     entities are created automatically as modules are discovered.
   - `button.splitflap_sync`: Fetch state and sync modules.
-  - `button.splitflap_scan`: Trigger RS485 bus scan.
+  - `button.splitflap_scan`: Discover modules with a full RS485 bus scan.
+  - `button.splitflap_update`: Update the modules that are already known.
 
 ---
 
@@ -72,6 +78,16 @@ optional: the card can render and inspect modules directly from the aggregate
 per-module sensor entities. Clicking a module tile opens the in-card module
 panel. Use the gear button to change columns / tile ratio for larger displays.
 
+The card exposes two refresh actions:
+
+- **Update Current** refreshes flaps and diagnostics for modules the firmware
+  already knows about. It is fast and does not change the module list.
+- **Discover** scans every possible RS485 id (1-255). Use it after adding or
+  removing hardware; the scan replaces the known module list.
+
+A board that reports zero modules renders no tiles, so an empty or
+disconnected board no longer shows placeholder flaps.
+
 ### Card Configuration Example (YAML)
 
 ```yaml
@@ -82,6 +98,7 @@ status_entity: sensor.splitflap_master_status
 modules_sensor: sensor.splitflap_detected_modules
 sync_entity: button.splitflap_sync
 scan_entity: button.splitflap_scan
+update_entity: button.splitflap_update
 # Optional layout defaults (the gear button overrides and saves them locally)
 module_columns: 0      # 0 = auto-fit; e.g. 50 wraps a 100-module board into 2 rows
 module_ratio: "38:52"  # tile width:height, or a number such as 0.73

@@ -765,7 +765,7 @@ class SplitFlapCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         _LOGGER.info("Requested sync/fetch state on %s", topic)
 
     async def update_data(self) -> None:
-        """Update data"""
+        """Refresh the modules the firmware already knows about."""
         topic = f"{self.prefix}/command/update"
         payload = json.dumps({"action": "update_data"})
         await mqtt.async_publish(self.hass, topic, payload)

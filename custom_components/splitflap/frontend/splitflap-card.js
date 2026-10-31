@@ -8,7 +8,7 @@
  * dialog, but the card works without per-module entities.
  */
 
-const SPLITFLAP_CARD_VERSION = "1.3.0";
+const SPLITFLAP_CARD_VERSION = "1.5.0";
 const MODULE_ID_ATTR = "splitflap_module_id";
 const MODULE_PREFIX_ATTR = "splitflap_prefix";
 const LAYOUT_STORAGE_PREFIX = "splitflap-card-layout:";
@@ -34,6 +34,10 @@ const ENTITY_PATTERNS = {
   scan: [
     /^button\..*splitflap.*scan$/i,
     /^button\..*_scan$/i,
+  ],
+  update: [
+    /^button\..*splitflap.*update(_current)?$/i,
+    /^button\..*_update(_current)?$/i,
   ],
 };
 
@@ -145,6 +149,7 @@ const DEFAULT_CONFIG = {
   modules_sensor: "sensor.splitflap_detected_modules",
   sync_entity: "button.splitflap_sync",
   scan_entity: "button.splitflap_scan",
+  update_entity: "button.splitflap_update",
   module_entities: [],
   // Layout defaults. `module_columns: 0` means auto-fit to the card width.
   module_columns: 0,
@@ -230,6 +235,7 @@ class SplitFlapCard extends HTMLElement {
       modules_sensor: findEntity(ENTITY_PATTERNS.modules),
       sync_entity: findEntity(ENTITY_PATTERNS.sync),
       scan_entity: findEntity(ENTITY_PATTERNS.scan),
+      update_entity: findEntity(ENTITY_PATTERNS.update),
     };
 
     for (const [key, value] of Object.entries(values)) {
@@ -970,6 +976,9 @@ class SplitFlapCard extends HTMLElement {
           gap: var(--tile-gap);
           min-height: 52px;
         }
+        .flap-row:empty {
+          display: none;
+        }
         .flap-row.fixed-columns {
           justify-content: stretch;
         }
@@ -1396,8 +1405,9 @@ class SplitFlapCard extends HTMLElement {
         <div class="feedback" id="feedback" role="status"></div>
 
         <div class="actions-row">
+          <button id="updateBtn" class="btn btn-secondary" type="button">Update Current</button>
+          <button id="scanBtn" class="btn btn-secondary" type="button">Discover</button>
           <button id="syncBtn" class="btn btn-secondary" type="button">Sync State</button>
-          <button id="scanBtn" class="btn btn-secondary" type="button">Scan Bus</button>
         </div>
       </ha-card>
     `;
@@ -1414,6 +1424,7 @@ class SplitFlapCard extends HTMLElement {
       feedback: this.shadowRoot.getElementById("feedback"),
       syncBtn: this.shadowRoot.getElementById("syncBtn"),
       scanBtn: this.shadowRoot.getElementById("scanBtn"),
+      updateBtn: this.shadowRoot.getElementById("updateBtn"),
       settingsToggle: this.shadowRoot.getElementById("settingsToggle"),
       layoutSettings: this.shadowRoot.getElementById("layoutSettings"),
       columnsInput: this.shadowRoot.getElementById("columnsInput"),
@@ -1450,6 +1461,13 @@ class SplitFlapCard extends HTMLElement {
         this._config.scan_entity,
         ENTITY_PATTERNS.scan,
         "scan"
+      )
+    );
+    this._refs.updateBtn.addEventListener("click", () =>
+      this._pressButton(
+        this._config.update_entity,
+        ENTITY_PATTERNS.update,
+        "update"
       )
     );
 
@@ -1624,10 +1642,21 @@ class SplitFlapCard extends HTMLElement {
       return;
     }
 
-    // No hardware module data yet: render a simple text preview instead.
+    // A board with no modules shows no tiles at all. Rendering placeholder
+    // tiles here used to leave four dead flaps on an empty/incomplete board.
+    if (modulesCount <= 0) {
+      if (this._fallbackSignature !== "empty" || container.children.length) {
+        container.replaceChildren();
+        this._fallbackSignature = "empty";
+        this._moduleSignature = "";
+      }
+      return;
+    }
+
+    // Modules are known by count but their entities are not available yet:
+    // render a simple text preview instead.
     const textChars = upperText.length > 0 ? Array.from(upperText) : [];
-    const placeholderCount =
-      modulesCount > 0 ? modulesCount : Math.max(textChars.length, 4);
+    const placeholderCount = modulesCount;
     const chars = new Array(placeholderCount)
       .fill(" ")
       .map((blank, index) =>

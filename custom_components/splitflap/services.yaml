@@ -30,9 +30,13 @@ sync:
   description: Request current state and module info from ESP32 master.
 
 scan:
-  name: Scan Bus
-  description: Trigger an RS485 bus scan on the ESP32 master to discover modules.
+  name: Discover Modules
+  description: >-
+    Discover modules by scanning every possible RS485 id (1-255). Use this after
+    adding or removing hardware; it replaces the known module list.
 
 update:
-  name: Update Data
-  description: Request data update from ESP32 faster than a full bus scan.
+  name: Update Current Modules
+  description: >-
+    Refresh flaps and diagnostics for the modules that are already known. This
+    is much faster than a full scan and does not add or remove modules.
