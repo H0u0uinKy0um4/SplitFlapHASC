@@ -8,7 +8,7 @@
  * dialog, but the card works without per-module entities.
  */
 
-const SPLITFLAP_CARD_VERSION = "1.6.5";
+const SPLITFLAP_CARD_VERSION = "1.6.6";
 const MODULE_ID_ATTR = "splitflap_module_id";
 const MODULE_PREFIX_ATTR = "splitflap_prefix";
 const LAYOUT_STORAGE_PREFIX = "splitflap-card-layout:";
@@ -2142,15 +2142,15 @@ class SplitFlapCard extends HTMLElement {
       return;
     }
     const modules = this._boardModules();
-    const targetSteps = {};
-    for (const m of modules) targetSteps[m.id] = 0;
+    const currentStep = {};
+    for (const m of modules) currentStep[m.id] = 0;
     this._boardCalibration = {
       active: true,
       mode: "home",
       referenceIndex: 0,
       sequence: [0],
       seqPos: 0,
-      targetSteps,
+      currentStep,
       message: "Start with Home (space) to fix home offset first. Nudge each module until green, then Next.",
       messageError: false,
       applying: false,
@@ -2201,8 +2201,8 @@ class SplitFlapCard extends HTMLElement {
     }
     bc.seqPos = 0;
     bc.referenceIndex = bc.sequence[0];
-    bc.targetSteps = {};
-    for (const m of this._boardModules()) bc.targetSteps[m.id] = 0;
+    bc.currentStep = {};
+    for (const m of this._boardModules()) bc.currentStep[m.id] = Math.round(bc.referenceIndex * (Number(this._firstValue(this._boardModuleAttrs(m), MODULE_STAT_ALIASES.total_steps)) || 4096) / 64);
   }
 
   async _boardCalibrationSendReference() {
@@ -2295,8 +2295,8 @@ class SplitFlapCard extends HTMLElement {
           bc.sequence = [bc.singleRef];
           bc.seqPos = 0;
           bc.referenceIndex = bc.singleRef;
-          bc.targetSteps = {};
-          for (const m of modules) bc.targetSteps[m.id] = 0;
+          bc.currentStep = {};
+          for (const m of modules) bc.currentStep[m.id] = Math.round(bc.referenceIndex * (Number(this._firstValue(this._boardModuleAttrs(m), MODULE_STAT_ALIASES.total_steps)) || 4096) / 64);
           this._boardCalibrationSendReference();
           this._renderBoardCalibration();
         });
@@ -2338,9 +2338,9 @@ class SplitFlapCard extends HTMLElement {
         const attrs = this._boardModuleAttrs(m);
         const totalSteps = Number(this._firstValue(attrs, MODULE_STAT_ALIASES.total_steps)) || 4096;
         const stepPerFlap = totalSteps / 64;
-        const targetStep = bc.targetSteps[m.id] || 0;
         const basePos = Math.round(bc.referenceIndex * stepPerFlap);
-        const correction = targetStep;
+        const curStep = bc.currentStep[m.id] !== undefined ? bc.currentStep[m.id] : basePos;
+        const correction = curStep - basePos;
         const nudge = Math.trunc(correction / stepPerFlap);
         const nudgeSteps = correction - nudge * stepPerFlap;
         if (correction === 0) aligned += 1;
@@ -2413,13 +2413,11 @@ class SplitFlapCard extends HTMLElement {
     const totalSteps = Number(this._firstValue(attrs, MODULE_STAT_ALIASES.total_steps)) || 4096;
     const stepPerFlap = totalSteps / 64;
 
-    const cur = bc.targetSteps[moduleId] || 0;
+    const cur = bc.currentStep[moduleId] !== undefined ? bc.currentStep[moduleId] : Math.round(bc.referenceIndex * stepPerFlap);
     const delta = Math.round(flapDelta * stepPerFlap + stepDelta);
-    bc.targetSteps[moduleId] = cur + delta;
+    bc.currentStep[moduleId] = cur + delta;
 
-    const basePos = Math.round(bc.referenceIndex * stepPerFlap);
-    const correction = bc.targetSteps[moduleId];
-    const finalTarget = ((basePos + correction) % totalSteps + totalSteps) % totalSteps;
+    const finalTarget = ((bc.currentStep[moduleId] % totalSteps) + totalSteps) % totalSteps;
 
     try {
       await this._hass.callService("splitflap", "calibrate", {
@@ -2442,18 +2440,15 @@ class SplitFlapCard extends HTMLElement {
 
     // Auto-apply corrections for current reference flap
     for (const m of modules) {
-      const targetStep = bc.targetSteps[m.id] || 0;
-      if (targetStep === 0) continue;
-
       const attrs = this._boardModuleAttrs(m);
       const totalSteps = Number(this._firstValue(attrs, MODULE_STAT_ALIASES.total_steps)) || 4096;
       const homeOffset = Number(this._firstValue(attrs, MODULE_STAT_ALIASES.home_offset)) || 0;
       const stepPerFlap = totalSteps / 64;
-      const correction = targetStep; // already relative to reference base? No...
+      const basePos = Math.round(refIndex * stepPerFlap);
+      const curStep = bc.currentStep[m.id] !== undefined ? bc.currentStep[m.id] : basePos;
+      const correction = curStep - basePos;
+      if (correction === 0) continue;
 
-      // correction should be targetStep (which is relative to reference base)
-      // For home pass: newOffset = homeOffset + correction
-      // For map pass: mapEntry = refIndex*stepPerFlap + correction
       try {
         if (isHomePass) {
           const newOffset = ((homeOffset + correction) % totalSteps + totalSteps) % totalSteps;
@@ -2464,7 +2459,6 @@ class SplitFlapCard extends HTMLElement {
             clear_map: true,
           });
         } else {
-          const basePos = Math.round(refIndex * stepPerFlap);
           const newTarget = ((basePos + correction) % totalSteps + totalSteps) % totalSteps;
           await this._hass.callService("splitflap", "calibrate", {
             action: "apply",
@@ -2484,8 +2478,8 @@ class SplitFlapCard extends HTMLElement {
       bc.seqPos = bc.sequence.length - 1;
     } else {
       bc.referenceIndex = bc.sequence[bc.seqPos];
-      bc.targetSteps = {};
-      for (const m of modules) bc.targetSteps[m.id] = 0;
+      bc.currentStep = {};
+      for (const m of modules) bc.currentStep[m.id] = Math.round(bc.referenceIndex * (Number(this._firstValue(this._boardModuleAttrs(m), MODULE_STAT_ALIASES.total_steps)) || 4096) / 64);
       bc.message = `Moved to flap ${bc.referenceIndex}. Nudge until green, then Next.`;
       await this._boardCalibrationSendReference();
     }

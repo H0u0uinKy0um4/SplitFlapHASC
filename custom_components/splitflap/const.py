@@ -6,7 +6,7 @@ DOMAIN: Final = "splitflap"
 DEFAULT_NAME: Final = "SplitFlap"
 DEFAULT_TOPIC_PREFIX: Final = "splitflap"
 
-FRONTEND_VERSION: Final = "1.6.5"
+FRONTEND_VERSION: Final = "1.6.6"
 FRONTEND_URL_PATH: Final = "/splitflap/splitflap-card.js"
 
 CONF_TOPIC_PREFIX: Final = "topic_prefix"
