@@ -8,7 +8,7 @@
  * dialog, but the card works without per-module entities.
  */
 
-const SPLITFLAP_CARD_VERSION = "1.6.3";
+const SPLITFLAP_CARD_VERSION = "1.6.4";
 const MODULE_ID_ATTR = "splitflap_module_id";
 const MODULE_PREFIX_ATTR = "splitflap_prefix";
 const LAYOUT_STORAGE_PREFIX = "splitflap-card-layout:";
@@ -509,6 +509,10 @@ class SplitFlapCard extends HTMLElement {
     // Attached once: the shadow root survives skeleton rebuilds, so adding this
     // in _buildSkeleton would stack duplicate listeners after config changes.
     this.shadowRoot.addEventListener("keydown", (event) => {
+      if (event.key === "Escape" && this._boardCalibration) {
+        this._closeBoardCalibration();
+        return;
+      }
       const panel = this._refs.moduleDetails;
       if (event.key === "Escape" && panel && !panel.hidden) {
         this._closeModuleDetails();
@@ -1485,6 +1489,9 @@ class SplitFlapCard extends HTMLElement {
           padding: 20px;
           overflow: auto;
         }
+        .board-calibration[hidden] {
+          display: none !important;
+        }
         .board-calibration-header {
           display: flex;
           justify-content: space-between;
@@ -2214,7 +2221,8 @@ class SplitFlapCard extends HTMLElement {
     const panel = this._refs.boardCalibration;
     const body = this._refs.boardCalibrationBody;
     if (!panel || !body || !this._boardCalibration) return;
-    panel.hidden = false;
+    try {
+      panel.hidden = false;
     const bc = this._boardCalibration;
     const modules = this._boardModules();
 
@@ -2369,6 +2377,11 @@ class SplitFlapCard extends HTMLElement {
     progress.className = "board-calibration-progress";
     progress.textContent = `${aligned} / ${total} modules aligned`;
     body.append(progress);
+    } catch (err) {
+      console.error("[splitflap-card] Board calibration render failed:", err);
+      panel.hidden = true;
+      this._boardCalibration = null;
+    }
   }
 
   async _boardNudge(moduleId, flapDelta, stepDelta) {
