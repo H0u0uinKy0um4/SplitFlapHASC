@@ -45,9 +45,11 @@ calibrate:
   name: Calibrate Module
   description: >-
     Drive one module and persist calibration data. Use action `goto` to move to
-    an expected flap, `home` to re-home, `apply` to write a new home offset and
-    position-map entries, `clear_map` to erase the position map, or `refresh` to
-    re-read the module configuration.
+    an expected flap, `home` to re-home, `apply` to write a new home offset
+    and/or position-map entries, `clear_map` to erase the position map, or
+    `refresh` to re-read the module configuration. When `apply` changes the
+    home offset, existing position-map entries not listed in `positions` are
+    shifted to stay valid; set `clear_map` to discard them instead.
   fields:
     action:
       name: Action
@@ -106,3 +108,11 @@ calibrate:
       required: false
       selector:
         object:
+    clear_map:
+      name: Clear position map
+      description: >-
+        Erase every position-map entry before applying. Used by the card when
+        fixing the home offset so stale entries cannot fight the new reference.
+      required: false
+      selector:
+        boolean:

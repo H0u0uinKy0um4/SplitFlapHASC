@@ -30,6 +30,7 @@ ATTR_INDEX = "index"
 ATTR_FLAP = "flap"
 ATTR_HOME_OFFSET = "home_offset"
 ATTR_POSITIONS = "positions"
+ATTR_CLEAR_MAP = "clear_map"
 
 CALIBRATION_ACTIONS = ("goto", "home", "apply", "clear_map", "refresh")
 
@@ -53,6 +54,7 @@ CALIBRATE_SCHEMA = vol.Schema(
             vol.Coerce(int), vol.Range(min=0, max=65535)
         ),
         vol.Optional(ATTR_POSITIONS): POSITIONS_SCHEMA,
+        vol.Optional(ATTR_CLEAR_MAP, default=False): cv.boolean,
     }
 )
 
@@ -122,6 +124,7 @@ async def handle_calibrate(call: ServiceCall, hass: HomeAssistant) -> None:
             flap=data.get(ATTR_FLAP),
             home_offset=data.get(ATTR_HOME_OFFSET),
             positions=data.get(ATTR_POSITIONS),
+            clear_map=data.get(ATTR_CLEAR_MAP, False),
         )
 
 

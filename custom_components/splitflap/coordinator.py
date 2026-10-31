@@ -780,12 +780,19 @@ class SplitFlapCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         flap: str | None = None,
         home_offset: int | None = None,
         positions: dict[str, Any] | None = None,
+        clear_map: bool = False,
     ) -> None:
         """Send a calibration command to one module.
 
         ``action`` is one of ``goto``, ``home``, ``apply``, ``clear_map`` or
         ``refresh``. ``apply`` persists a new home offset and the supplied
         position-map entries, then asks the slave to re-home.
+
+        Position-map entries are absolute step targets in the module's current
+        home coordinate. When ``apply`` changes the home offset, every existing
+        entry that is *not* supplied explicitly is shifted by the same delta so
+        it keeps pointing at the same physical flap. Set ``clear_map`` to
+        discard them instead.
         """
         cleaned_positions: dict[int, int] = {}
         if isinstance(positions, dict):
@@ -800,6 +807,41 @@ class SplitFlapCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 ):
                     cleaned_positions[entry_index] = entry_position
 
+        # When an apply changes the home offset, keep the existing map entries
+        # valid by shifting them by the same delta. Entries explicitly supplied
+        # take precedence (they are already in the new coordinate).
+        if (
+            action == "apply"
+            and not clear_map
+            and home_offset is not None
+        ):
+            module = self.data.get("modules", {}).get(str(module_id))
+            if isinstance(module, dict):
+                stats = module_stats(module)
+                old_offset = stats.get("home_offset")
+                total_steps = stats.get("total_steps")
+                old_positions = stats.get("map_of_positions")
+                if (
+                    isinstance(old_offset, int)
+                    and isinstance(total_steps, int)
+                    and total_steps > 0
+                    and isinstance(old_positions, dict)
+                ):
+                    delta = (old_offset - int(home_offset)) % total_steps
+                    if delta:
+                        for key, value in old_positions.items():
+                            entry_index = _coerce_optional_int(key)
+                            entry_position = _coerce_optional_int(value)
+                            if (
+                                entry_index is not None
+                                and 0 <= entry_index < 64
+                                and entry_position is not None
+                            ):
+                                if entry_index not in cleaned_positions:
+                                    cleaned_positions[entry_index] = (
+                                        entry_position + delta
+                                    ) % total_steps
+
         payload: dict[str, Any] = {
             "action": action,
             "module": _module_payload_id(module_id),
@@ -812,6 +854,8 @@ class SplitFlapCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         elif action == "apply":
             if home_offset is not None:
                 payload["home_offset"] = int(home_offset)
+            if clear_map:
+                payload["clear_map"] = True
             if cleaned_positions:
                 payload["positions"] = {
                     str(key): value for key, value in sorted(cleaned_positions.items())
@@ -820,16 +864,6 @@ class SplitFlapCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         topic = f"{self.prefix}/command/calibrate"
         await mqtt.async_publish(self.hass, topic, json.dumps(payload))
         _LOGGER.info("Sent calibration command %s to %s", payload, topic)
-
-        # Reflect the applied values immediately. The firmware publishes fresh
-        # diagnostics once the module has finished re-homing.
-        if action in {"apply", "clear_map"}:
-            self._apply_local_calibration(
-                module_id,
-                home_offset if action == "apply" else None,
-                cleaned_positions if action == "apply" else None,
-                clear_map=action == "clear_map",
-            )
 
     @callback
     def _apply_local_calibration(
@@ -855,7 +889,10 @@ class SplitFlapCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             updated_module["home_offset"] = int(home_offset)
 
         if clear_map:
-            updated_module["map_of_positions"] = {}
+            merged = {}
+            if positions:
+                merged.update({str(index): position for index, position in positions.items()})
+            updated_module["map_of_positions"] = merged
         elif positions:
             merged = normalize_position_map(
                 updated_module.get("map_of_positions")

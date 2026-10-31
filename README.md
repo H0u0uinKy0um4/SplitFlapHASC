@@ -93,35 +93,28 @@ disconnected board no longer shows placeholder flaps.
 
 ### Calibrating a module
 
-Click a module tile, then **Calibrate** in its details panel:
+Click a module tile, then **Calibrate** in its details panel. Calibration is
+split into two independent steps so the global Home reference and the per-flap
+position map can never fight each other:
 
-1. Press **Home module** first so the module starts from a known reference. Wait
-   until the reel has physically stopped.
-2. Choose an **Expected flap** and press **Send expected**. Wait until the reel
-   has physically stopped.
-3. Compare the physical flap with the expected one. The **Actual flap** selector
-   defaults to the expected flap; change it if the reel shows a different flap,
-   then press **Record pair**.
-4. Repeat with flaps spread across the drum (for example 0, 8, 16, 24, 32, 40,
-   48, 56). More samples give a better result.
-5. The card shows the proposed home offset and any per-flap position-map
-   entries. Press **Apply calibration**; the module re-homes with the new
-   offset and then reports its updated diagnostics.
-6. Re-send the display text when you are done calibrating; the module re-homes
-   to flap 0 during the apply step.
+1. **Align Home first.** Press **Home module** and wait until the reel stops.
+   Then choose the flap the reel is physically showing in **Home landed on**
+   and press **Apply Home offset**. This changes only the home offset (and, by
+   default, clears the position map so stale entries cannot fight the new
+   reference). Repeat until Home shows flap #0 (space).
+2. **Map individual flaps (optional).** Only after Home shows space, confirm the
+   **Home shows flap #0** checkbox. Then choose an **Expected flap**, press
+   **Send expected**, compare the reel and select the flap it is physically
+   showing, then press **Record pair**. Sample at least four flaps spread around
+   the drum. Press **Apply position map** to write per-flap targets. This step
+   never changes the home offset.
+3. Re-send the display text when you are done calibrating.
 
-The global home-offset correction is the median signed flap error across the
-samples. Per-flap map entries are only written for flaps that were measured and
-that still need an offset after the home correction. Before calculating a new
-entry, the card compares the sample against the target the module actually used
-(the existing map entry), so applying calibration repeatedly is safe: flaps
-that were calibrated earlier keep working instead of being overwritten with the
-default position.
-
-Entries for flaps that were not sampled are left untouched. **Fill unsampled
-flaps by interpolating between measurements** is enabled by default and fills
-the gaps between at least four measured flaps; turn it off if you only want the
-sampled flaps touched. **Clear position map** removes every entry while keeping
+The Home offset is corrected from the single observation of which flap Home lands
+on; the position map is corrected from expected-vs-actual flap pairs. Existing
+position-map entries are shifted when the home offset changes, and flaps that
+were not sampled are left untouched unless you enable the advanced
+interpolation option. **Clear position map** removes every entry while keeping
 the home offset.
 
 This workflow uses the module's existing RS485 command set, so no slave
