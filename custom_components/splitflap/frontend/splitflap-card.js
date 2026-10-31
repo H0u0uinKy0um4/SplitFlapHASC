@@ -8,7 +8,7 @@
  * dialog, but the card works without per-module entities.
  */
 
-const SPLITFLAP_CARD_VERSION = "1.5.0";
+const SPLITFLAP_CARD_VERSION = "1.6.0";
 const MODULE_ID_ATTR = "splitflap_module_id";
 const MODULE_PREFIX_ATTR = "splitflap_prefix";
 const LAYOUT_STORAGE_PREFIX = "splitflap-card-layout:";
@@ -183,6 +183,105 @@ function firstCodePoint(value) {
   return Array.from(text)[0];
 }
 
+function median(values) {
+  if (!Array.isArray(values) || values.length === 0) return 0;
+  const sorted = [...values].sort((a, b) => a - b);
+  const middle = Math.floor(sorted.length / 2);
+  return sorted.length % 2 === 1
+    ? sorted[middle]
+    : (sorted[middle - 1] + sorted[middle]) / 2;
+}
+
+function normalizeStepPosition(value, totalSteps) {
+  const total = Number(totalSteps);
+  if (!Number.isFinite(total) || total <= 0) return 0;
+  return ((Math.round(Number(value)) % total) + total) % total;
+}
+
+function flapDelta(expected, actual, flapCount = 64) {
+  const count = Math.max(Number(flapCount) || 64, 1);
+  const raw = ((Number(actual) - Number(expected)) % count + count) % count;
+  return raw > count / 2 ? raw - count : raw;
+}
+
+/**
+ * Turn expected/actual flap pairs into a calibration plan.
+ *
+ * The global home-offset error is the median flap offset across all samples.
+ * Any error left after applying that correction becomes a position-map entry
+ * for that flap index. Tiny residuals (less than half a flap) are ignored.
+ */
+function computeCalibrationPlan(
+  samples,
+  totalSteps,
+  homeOffset,
+  flapCount = 64
+) {
+  const total = Number(totalSteps);
+  const offset = Number(homeOffset);
+  if (
+    !Array.isArray(samples) ||
+    samples.length === 0 ||
+    !Number.isFinite(total) ||
+    total <= 0 ||
+    !Number.isFinite(offset) ||
+    flapCount <= 0
+  ) {
+    return null;
+  }
+
+  const stepPerFlap = total / flapCount;
+  const measured = samples
+    .map((sample) => {
+      const expected = Number(sample.expected);
+      const actual = Number(sample.actual);
+      if (!Number.isFinite(expected) || !Number.isFinite(actual)) return null;
+      const delta = flapDelta(expected, actual, flapCount);
+      return {
+        expected,
+        actual,
+        delta,
+        errorSteps: delta * stepPerFlap,
+      };
+    })
+    .filter(Boolean);
+
+  if (measured.length === 0) return null;
+
+  const correction = Math.round(median(measured.map((item) => item.errorSteps)));
+  const newHomeOffset = normalizeStepPosition(offset - correction, total);
+
+  const groups = new Map();
+  for (const item of measured) {
+    const residual = item.errorSteps - correction;
+    if (!groups.has(item.expected)) groups.set(item.expected, []);
+    groups.get(item.expected).push(residual);
+  }
+
+  const threshold = Math.max(1, Math.round(stepPerFlap / 2));
+  const mapPositions = {};
+  for (const [expected, residuals] of groups.entries()) {
+    const residual = Math.round(
+      residuals.reduce((sum, value) => sum + value, 0) / residuals.length
+    );
+    if (Math.abs(residual) < threshold) continue;
+    const basePosition = Math.floor((expected * total) / flapCount);
+    mapPositions[String(expected)] = normalizeStepPosition(
+      basePosition - residual,
+      total
+    );
+  }
+
+  return {
+    correction,
+    newHomeOffset,
+    mapPositions,
+    stepPerFlap,
+    threshold,
+    measured,
+  };
+}
+
 class SplitFlapCard extends HTMLElement {
   constructor() {
     super();
@@ -204,6 +303,8 @@ class SplitFlapCard extends HTMLElement {
     this._layoutSignature = "";
     this._settingsOpen = false;
     this._modulesCount = 0;
+    this._calibration = null;
+    this._calibrationMessageNode = undefined;
     this._refs = {};
 
     // Attached once: the shadow root survives skeleton rebuilds, so adding this
@@ -1175,6 +1276,108 @@ class SplitFlapCard extends HTMLElement {
         .module-details-actions .btn-secondary {
           flex: 0 0 auto;
         }
+        .calibration {
+          grid-column: 1 / -1;
+          display: flex;
+          flex-direction: column;
+          gap: 9px;
+          margin-top: 4px;
+          padding-top: 11px;
+          border-top: 1px solid var(--divider-color, #383842);
+        }
+        .calibration-heading {
+          font-size: 0.88rem;
+          font-weight: 600;
+        }
+        .calibration-hint,
+        .calibration-status {
+          color: var(--secondary-text-color, #8e8e93);
+          font-size: 0.72rem;
+          line-height: 1.35;
+        }
+        .calibration-status.error {
+          color: var(--error-color, #e74c3c);
+        }
+        .calibration-row,
+        .calibration-actions {
+          display: flex;
+          flex-wrap: wrap;
+          align-items: flex-end;
+          gap: 8px;
+        }
+        .calibration-field {
+          display: flex;
+          flex: 1 1 130px;
+          flex-direction: column;
+          gap: 3px;
+          min-width: 0;
+          color: var(--secondary-text-color, #8e8e93);
+          font-size: 0.68rem;
+          letter-spacing: 0.04em;
+          text-transform: uppercase;
+        }
+        .calibration-select {
+          box-sizing: border-box;
+          width: 100%;
+          padding: 7px 8px;
+          border: 1px solid var(--divider-color, #3a3a46);
+          border-radius: 6px;
+          background: var(--secondary-background-color, #2b2b34);
+          color: var(--primary-text-color, #ececec);
+          font-size: 0.8rem;
+        }
+        .calibration-actions .btn {
+          flex: 0 1 auto;
+        }
+        .calibration-summary {
+          padding: 8px;
+          border: 1px solid var(--divider-color, #383842);
+          border-radius: 7px;
+          background: rgba(255, 255, 255, 0.025);
+          font-size: 0.76rem;
+          line-height: 1.45;
+        }
+        .calibration-summary strong {
+          font-weight: 600;
+        }
+        .calibration-map {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 4px;
+          margin-top: 5px;
+        }
+        .calibration-samples {
+          display: flex;
+          flex-direction: column;
+          gap: 4px;
+          max-height: 180px;
+          overflow: auto;
+        }
+        .calibration-sample {
+          display: grid;
+          grid-template-columns: 1fr auto auto;
+          gap: 8px;
+          align-items: center;
+          padding: 5px 7px;
+          border-radius: 5px;
+          background: var(--secondary-background-color, #2b2b34);
+          font-size: 0.74rem;
+        }
+        .calibration-sample button {
+          width: 22px;
+          height: 22px;
+          padding: 0;
+          border: none;
+          border-radius: 50%;
+          background: transparent;
+          color: var(--secondary-text-color, #8e8e93);
+          cursor: pointer;
+          line-height: 1;
+        }
+        .calibration-sample button:hover {
+          background: var(--divider-color, #383842);
+          color: var(--primary-text-color, #fff);
+        }
         .controls {
           display: flex;
           flex-wrap: wrap;
@@ -1364,6 +1567,13 @@ class SplitFlapCard extends HTMLElement {
           <div class="module-details-actions">
             <button
               class="btn btn-secondary"
+              id="moduleDetailsCalibrate"
+              type="button"
+            >
+              Calibrate
+            </button>
+            <button
+              class="btn btn-secondary"
               id="moduleDetailsStart"
               type="button"
             >
@@ -1438,6 +1648,9 @@ class SplitFlapCard extends HTMLElement {
       moduleDetailsTitle: this.shadowRoot.getElementById("moduleDetailsTitle"),
       moduleDetailsBody: this.shadowRoot.getElementById("moduleDetailsBody"),
       moduleDetailsClose: this.shadowRoot.getElementById("moduleDetailsClose"),
+      moduleDetailsCalibrate: this.shadowRoot.getElementById(
+        "moduleDetailsCalibrate"
+      ),
       moduleDetailsStart: this.shadowRoot.getElementById("moduleDetailsStart"),
       moduleDetailsMore: this.shadowRoot.getElementById("moduleDetailsMore"),
     };
@@ -1513,6 +1726,10 @@ class SplitFlapCard extends HTMLElement {
       this._closeModuleDetails();
     });
 
+    this._refs.moduleDetailsCalibrate.addEventListener("click", () =>
+      this._toggleCalibration()
+    );
+
     this._refs.moduleDetailsStart.addEventListener("click", () =>
       this._useSelectedAsStart()
     );
@@ -1543,6 +1760,422 @@ class SplitFlapCard extends HTMLElement {
     this._closeModuleDetails();
     this._refs.input.focus();
     this._showFeedback(`Text will start at module ${position}`);
+  }
+
+  _toggleCalibration() {
+    const module = this._selectedModule;
+    if (!module) return;
+
+    const moduleId = String(module.id);
+    if (this._calibration && String(this._calibration.moduleId) === moduleId) {
+      this._calibration = null;
+      this._calibrationMessageNode = undefined;
+      this._detailsSignature = "";
+      this.render();
+      return;
+    }
+
+    if (this._calibration && this._calibration.samples.length > 0) {
+      const previous = this._calibration.moduleId;
+      const count = this._calibration.samples.length;
+      if (
+        !window.confirm(
+          `Discard ${count} sample${count === 1 ? "" : "s"} for module ${previous}?`
+        )
+      ) {
+        return;
+      }
+    }
+
+    this._calibration = {
+      moduleId,
+      samples: [],
+      expectedIndex: 0,
+      actualIndex: 0,
+      message: "",
+      messageError: false,
+    };
+    this._calibrationMessageNode = undefined;
+    this._detailsSignature = "";
+    this.render();
+  }
+
+  async _callCalibrationService(payload) {
+    if (!this._hass) throw new Error("Home Assistant is not ready");
+    await this._hass.callService("splitflap", "calibrate", payload);
+  }
+
+  _setCalibrationMessage(message, error = false) {
+    if (!this._calibration) return;
+    this._calibration.message = message;
+    this._calibration.messageError = Boolean(error);
+
+    const node = this._calibrationMessageNode;
+    if (node) {
+      node.textContent = message;
+      node.classList.toggle("error", Boolean(error));
+    }
+  }
+
+  async _runCalibrationGoto(index) {
+    if (!this._calibration) return;
+    const moduleId = Number(this._calibration.moduleId);
+    this._setCalibrationMessage(`Moving to flap #${index}...`);
+
+    try {
+      await this._callCalibrationService({
+        action: "goto",
+        module_id: moduleId,
+        index,
+      });
+      this._setCalibrationMessage(
+        `Expected flap #${index} sent. Wait for the reel to stop, then record the actual flap.`
+      );
+    } catch (err) {
+      console.error("[splitflap-card] Calibration goto failed:", err);
+      this._setCalibrationMessage("Could not send the movement command.", true);
+    }
+  }
+
+  async _runCalibrationHome() {
+    if (!this._calibration) return;
+    const moduleId = Number(this._calibration.moduleId);
+    this._setCalibrationMessage("Homing module...");
+
+    try {
+      await this._callCalibrationService({ action: "home", module_id: moduleId });
+      this._setCalibrationMessage(
+        "Home command sent. Wait for the reel to stop before testing."
+      );
+    } catch (err) {
+      console.error("[splitflap-card] Calibration home failed:", err);
+      this._setCalibrationMessage("Could not home the module.", true);
+    }
+  }
+
+  _flapLabel(flapChars, index) {
+    const value = flapChars[index];
+    if (value === " ") return `#${index} space`;
+    if (value === undefined || value === null || value === "") {
+      return `#${index}`;
+    }
+    return `#${index} ${value}`;
+  }
+
+  _createCalibrationSelect(label, flapChars, value, onChange) {
+    const field = document.createElement("label");
+    field.className = "calibration-field";
+
+    const caption = document.createElement("span");
+    caption.textContent = label;
+
+    const select = document.createElement("select");
+    select.className = "calibration-select";
+    for (let index = 0; index < 64; index += 1) {
+      const option = document.createElement("option");
+      option.value = String(index);
+      option.textContent = this._flapLabel(flapChars, index);
+      select.append(option);
+    }
+    select.value = String(value);
+    if (select.selectedIndex < 0) select.value = "0";
+    select.addEventListener("change", () =>
+      onChange(Number.parseInt(select.value, 10) || 0)
+    );
+
+    field.append(caption, select);
+    return field;
+  }
+
+  _appendCalibration(body, selected, attrs) {
+    const calibration = this._calibration;
+    if (
+      !calibration ||
+      String(calibration.moduleId) !== String(selected.id)
+    ) {
+      return;
+    }
+
+    const flapList = this._firstValue(attrs, MODULE_STAT_ALIASES.flap_list);
+    const flapChars =
+      typeof flapList === "string"
+        ? Array.from(flapList)
+        : Array.isArray(flapList)
+          ? flapList
+          : [];
+    const totalSteps = Number(
+      this._firstValue(attrs, MODULE_STAT_ALIASES.total_steps)
+    );
+    const homeOffset = Number(
+      this._firstValue(attrs, MODULE_STAT_ALIASES.home_offset)
+    );
+    const dataReady =
+      Number.isFinite(totalSteps) &&
+      totalSteps > 0 &&
+      Number.isFinite(homeOffset);
+    const plan = dataReady
+      ? computeCalibrationPlan(
+          calibration.samples,
+          totalSteps,
+          homeOffset,
+          64
+        )
+      : null;
+
+    const wrapper = document.createElement("div");
+    wrapper.className = "calibration";
+
+    const heading = document.createElement("div");
+    heading.className = "calibration-heading";
+    heading.textContent = `Calibration mode · module ${selected.id}`;
+
+    const hint = document.createElement("div");
+    hint.className = "calibration-hint";
+    hint.textContent =
+      "Send an expected flap, compare it with the physical reel, then record the actual flap. Repeat for several flaps before applying.";
+
+    wrapper.append(heading, hint);
+
+    if (!dataReady) {
+      const warning = document.createElement("div");
+      warning.className = "calibration-status error";
+      warning.textContent =
+        "This module did not report its home offset and total steps. Update the master firmware and press Update Current before applying calibration.";
+      wrapper.append(warning);
+    }
+
+    const expectedRow = document.createElement("div");
+    expectedRow.className = "calibration-row";
+    const expectedSelect = this._createCalibrationSelect(
+      "Expected flap",
+      flapChars,
+      calibration.expectedIndex,
+      (value) => {
+        calibration.expectedIndex = value;
+      }
+    );
+
+    const sendButton = document.createElement("button");
+    sendButton.type = "button";
+    sendButton.className = "btn btn-secondary";
+    sendButton.textContent = "Send expected";
+    sendButton.addEventListener("click", () =>
+      this._runCalibrationGoto(calibration.expectedIndex)
+    );
+
+    const homeButton = document.createElement("button");
+    homeButton.type = "button";
+    homeButton.className = "btn btn-secondary";
+    homeButton.textContent = "Home module";
+    homeButton.addEventListener("click", () => this._runCalibrationHome());
+
+    expectedRow.append(expectedSelect, sendButton, homeButton);
+
+    const actualRow = document.createElement("div");
+    actualRow.className = "calibration-row";
+    const actualSelect = this._createCalibrationSelect(
+      "Actual flap on reel",
+      flapChars,
+      calibration.actualIndex,
+      (value) => {
+        calibration.actualIndex = value;
+      }
+    );
+
+    const recordButton = document.createElement("button");
+    recordButton.type = "button";
+    recordButton.className = "btn btn-secondary";
+    recordButton.textContent = "Record pair";
+    recordButton.addEventListener("click", () => {
+      calibration.samples.push({
+        expected: calibration.expectedIndex,
+        actual: calibration.actualIndex,
+      });
+      calibration.message = `Recorded ${this._flapLabel(
+        flapChars,
+        calibration.expectedIndex
+      )} → ${this._flapLabel(flapChars, calibration.actualIndex)}.`;
+      calibration.messageError = false;
+      this._detailsSignature = "";
+      this.render();
+    });
+
+    actualRow.append(actualSelect, recordButton);
+    wrapper.append(expectedRow, actualRow);
+
+    const status = document.createElement("div");
+    status.className = calibration.messageError
+      ? "calibration-status error"
+      : "calibration-status";
+    status.textContent = calibration.message || "";
+    this._calibrationMessageNode = status;
+    wrapper.append(status);
+
+    if (calibration.samples.length > 0) {
+      const list = document.createElement("div");
+      list.className = "calibration-samples";
+
+      calibration.samples.forEach((sample, index) => {
+        const delta = flapDelta(sample.expected, sample.actual, 64);
+        const row = document.createElement("div");
+        row.className = "calibration-sample";
+
+        const text = document.createElement("span");
+        text.textContent = `${this._flapLabel(
+          flapChars,
+          sample.expected
+        )} → ${this._flapLabel(flapChars, sample.actual)} (Δ ${
+          delta > 0 ? "+" : ""
+        }${delta})`;
+
+        const deltaLabel = document.createElement("span");
+        deltaLabel.textContent = `${delta * (totalSteps / 64)} steps`;
+
+        const remove = document.createElement("button");
+        remove.type = "button";
+        remove.title = "Remove sample";
+        remove.setAttribute("aria-label", "Remove sample");
+        remove.textContent = "×";
+        remove.addEventListener("click", () => {
+          calibration.samples.splice(index, 1);
+          calibration.message = "";
+          this._detailsSignature = "";
+          this.render();
+        });
+
+        row.append(text, deltaLabel, remove);
+        list.append(row);
+      });
+
+      wrapper.append(list);
+    }
+
+    const summary = document.createElement("div");
+    summary.className = "calibration-summary";
+    if (!dataReady) {
+      summary.textContent = "Calibration apply is disabled until the module reports its configuration.";
+    } else if (!plan) {
+      summary.textContent =
+        "Record at least one expected/actual pair to calculate the home offset.";
+    } else {
+      const offsetLine = document.createElement("div");
+      const adjustment = -plan.correction;
+      offsetLine.textContent = `Proposed home offset: ${homeOffset} → ${
+        plan.newHomeOffset
+      } (adjust ${adjustment > 0 ? "+" : ""}${adjustment} steps).`;
+      summary.append(offsetLine);
+
+      const entries = Object.entries(plan.mapPositions);
+      const mapLine = document.createElement("div");
+      if (entries.length === 0) {
+        mapLine.textContent =
+          "No per-flap position-map entries needed; the global offset explains the samples.";
+      } else {
+        mapLine.textContent = `Position-map entries needed: ${entries.length}.`;
+        const map = document.createElement("div");
+        map.className = "calibration-map";
+        for (const [index, position] of entries) {
+          const chip = document.createElement("span");
+          chip.className = "detail-map-entry";
+          chip.textContent = `#${index}: ${position}`;
+          map.append(chip);
+        }
+        summary.append(mapLine, map);
+      }
+      if (entries.length === 0) summary.append(mapLine);
+    }
+    wrapper.append(summary);
+
+    const actions = document.createElement("div");
+    actions.className = "calibration-actions";
+
+    const applyButton = document.createElement("button");
+    applyButton.type = "button";
+    applyButton.className = "btn btn-primary";
+    applyButton.textContent = "Apply calibration";
+    applyButton.disabled = !plan || !dataReady;
+    applyButton.addEventListener("click", async () => {
+      if (!plan || !dataReady) return;
+
+      const payload = {
+        action: "apply",
+        module_id: Number(calibration.moduleId),
+        home_offset: plan.newHomeOffset,
+      };
+      if (Object.keys(plan.mapPositions).length > 0) {
+        payload.positions = plan.mapPositions;
+      }
+
+      this._setCalibrationMessage(
+        "Applying calibration and re-homing the module..."
+      );
+      try {
+        await this._callCalibrationService(payload);
+        this._setCalibrationMessage(
+          "Calibration applied. The module is re-homing; wait before testing again."
+        );
+      } catch (err) {
+        console.error("[splitflap-card] Calibration apply failed:", err);
+        this._setCalibrationMessage(
+          "Could not apply the calibration. Check the Home Assistant log.",
+          true
+        );
+      }
+    });
+
+    const clearMapButton = document.createElement("button");
+    clearMapButton.type = "button";
+    clearMapButton.className = "btn btn-secondary";
+    clearMapButton.textContent = "Clear position map";
+    clearMapButton.addEventListener("click", async () => {
+      if (
+        !window.confirm(
+          "Clear every position-map entry for this module? The home offset is kept."
+        )
+      ) {
+        return;
+      }
+      this._setCalibrationMessage("Clearing position map...");
+      try {
+        await this._callCalibrationService({
+          action: "clear_map",
+          module_id: Number(calibration.moduleId),
+        });
+        this._setCalibrationMessage("Position map cleared.");
+        this._detailsSignature = "";
+        this.render();
+      } catch (err) {
+        console.error("[splitflap-card] Clear map failed:", err);
+        this._setCalibrationMessage("Could not clear the position map.", true);
+      }
+    });
+
+    const resetButton = document.createElement("button");
+    resetButton.type = "button";
+    resetButton.className = "btn btn-secondary";
+    resetButton.textContent = "Reset samples";
+    resetButton.addEventListener("click", () => {
+      calibration.samples = [];
+      calibration.message = "Samples cleared.";
+      calibration.messageError = false;
+      this._detailsSignature = "";
+      this.render();
+    });
+
+    const closeButton = document.createElement("button");
+    closeButton.type = "button";
+    closeButton.className = "btn btn-secondary";
+    closeButton.textContent = "Close calibration";
+    closeButton.addEventListener("click", () => {
+      this._calibration = null;
+      this._calibrationMessageNode = undefined;
+      this._detailsSignature = "";
+      this.render();
+    });
+
+    actions.append(applyButton, clearMapButton, resetButton, closeButton);
+    wrapper.append(actions);
+    body.append(wrapper);
   }
 
   _openMoreInfo(entityId) {
@@ -1831,11 +2464,17 @@ class SplitFlapCard extends HTMLElement {
         : selected.raw && typeof selected.raw === "object"
           ? selected.raw
           : {};
+    const calibration =
+      this._calibration &&
+      String(this._calibration.moduleId) === String(selected.id)
+        ? this._calibration
+        : null;
     const signature = JSON.stringify({
       id: selected.id,
       entityId: selected.entityId,
       displayPosition: selected.displayPosition,
       attrs,
+      calibration,
     });
 
     if (signature === this._detailsSignature) {
@@ -1969,6 +2608,8 @@ class SplitFlapCard extends HTMLElement {
         )
       );
     }
+
+    this._appendCalibration(body, selected, attrs);
 
     this._refs.moduleDetailsMore.hidden = !selected.entityId;
     if (this._refs.moduleDetailsBackdrop) {

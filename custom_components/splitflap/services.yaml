@@ -40,3 +40,69 @@ update:
   description: >-
     Refresh flaps and diagnostics for the modules that are already known. This
     is much faster than a full scan and does not add or remove modules.
+
+calibrate:
+  name: Calibrate Module
+  description: >-
+    Drive one module and persist calibration data. Use action `goto` to move to
+    an expected flap, `home` to re-home, `apply` to write a new home offset and
+    position-map entries, `clear_map` to erase the position map, or `refresh` to
+    re-read the module configuration.
+  fields:
+    action:
+      name: Action
+      description: The calibration step to run.
+      required: true
+      selector:
+        select:
+          options:
+            - goto
+            - home
+            - apply
+            - clear_map
+            - refresh
+    module_id:
+      name: Module ID
+      description: RS485 id of the module to calibrate.
+      required: true
+      example: 3
+      selector:
+        number:
+          min: 1
+          max: 255
+          mode: box
+    index:
+      name: Flap index
+      description: 0-based flap index for the `goto` action.
+      required: false
+      example: 1
+      selector:
+        number:
+          min: 0
+          max: 63
+          mode: box
+    flap:
+      name: Flap character
+      description: Alternative to `index` for `goto`; the first character is used.
+      required: false
+      example: "A"
+      selector:
+        text:
+    home_offset:
+      name: Home offset
+      description: Steps from the Hall sensor edge to flap 0, used by `apply`.
+      required: false
+      example: 2704
+      selector:
+        number:
+          min: 0
+          max: 65535
+          mode: box
+    positions:
+      name: Position map
+      description: >-
+        Flap-index to step-position entries written by `apply`. Existing entries
+        not listed here are kept.
+      required: false
+      selector:
+        object:

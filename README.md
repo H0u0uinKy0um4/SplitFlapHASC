@@ -43,6 +43,9 @@ A complete Home Assistant integration and interactive Lovelace card for DIY RS48
   - `splitflap.update`: Refresh flaps and diagnostics for the modules that are
     already known. Much faster than a full scan; it never adds or removes
     modules.
+  - `splitflap.calibrate`: Drive one module and persist calibration data.
+    Actions: `goto` (move to a flap index), `home`, `apply` (write home offset
+    and position-map entries), `clear_map`, and `refresh`.
 - **Entities Provided**:
   - `text.splitflap_display_text`: Display text input.
   - `sensor.splitflap_master_status`: Master ESP32 connection state (`online`, `offline`).
@@ -87,6 +90,29 @@ The card exposes two refresh actions:
 
 A board that reports zero modules renders no tiles, so an empty or
 disconnected board no longer shows placeholder flaps.
+
+### Calibrating a module
+
+Click a module tile, then **Calibrate** in its details panel:
+
+1. Choose an **Expected flap** and press **Send expected**. Wait until the reel
+   has physically stopped.
+2. Compare the physical flap with the expected one, select the **Actual flap**
+   on the reel, and press **Record pair**.
+3. Repeat with flaps spread across the drum (for example 0, 8, 16, 24, 32, 40,
+   48, 56). More samples give a better result.
+4. The card shows the proposed home offset and any per-flap position-map
+   entries. Press **Apply calibration**; the module re-homes with the new
+   offset and then reports its updated diagnostics.
+
+The global home-offset correction is the median signed flap error across all
+samples. Any remaining error for an individual flap becomes a position-map
+entry. Residuals smaller than half a flap are ignored. Existing map entries for
+flaps that were not sampled are preserved; **Clear position map** removes them
+all.
+
+This workflow uses the module's existing RS485 command set, so no slave
+reflash is required. The updated master firmware is required.
 
 ### Card Configuration Example (YAML)
 

@@ -19,10 +19,42 @@ SERVICE_SEND_TEXT = "send_text"
 SERVICE_SYNC = "sync"
 SERVICE_SCAN = "scan"
 SERVICE_UPDATE = "update"
+SERVICE_CALIBRATE = "calibrate"
 
 # Service parameters
 ATTR_TEXT = "text"
 ATTR_START = "start"
+ATTR_MODULE_ID = "module_id"
+ATTR_ACTION = "action"
+ATTR_INDEX = "index"
+ATTR_FLAP = "flap"
+ATTR_HOME_OFFSET = "home_offset"
+ATTR_POSITIONS = "positions"
+
+CALIBRATION_ACTIONS = ("goto", "home", "apply", "clear_map", "refresh")
+
+POSITIONS_SCHEMA = vol.Schema(
+    {
+        cv.string: vol.All(vol.Coerce(int), vol.Range(min=0, max=65535)),
+    }
+)
+
+CALIBRATE_SCHEMA = vol.Schema(
+    {
+        vol.Required(ATTR_ACTION): vol.In(CALIBRATION_ACTIONS),
+        vol.Required(ATTR_MODULE_ID): vol.All(
+            vol.Coerce(int), vol.Range(min=1, max=255)
+        ),
+        vol.Optional(ATTR_INDEX): vol.All(
+            vol.Coerce(int), vol.Range(min=0, max=63)
+        ),
+        vol.Optional(ATTR_FLAP): cv.string,
+        vol.Optional(ATTR_HOME_OFFSET): vol.All(
+            vol.Coerce(int), vol.Range(min=0, max=65535)
+        ),
+        vol.Optional(ATTR_POSITIONS): POSITIONS_SCHEMA,
+    }
+)
 
 # Validation schemas
 SEND_TEXT_SCHEMA = vol.Schema(
@@ -79,6 +111,20 @@ async def handle_update(call: ServiceCall, hass: HomeAssistant) -> None:
         await coordinator.update_data()
 
 
+async def handle_calibrate(call: ServiceCall, hass: HomeAssistant) -> None:
+    """Drive and persist module calibration commands."""
+    data = call.data
+    for coordinator in get_coordinators(hass):
+        await coordinator.calibrate_module(
+            module_id=data[ATTR_MODULE_ID],
+            action=data[ATTR_ACTION],
+            index=data.get(ATTR_INDEX),
+            flap=data.get(ATTR_FLAP),
+            home_offset=data.get(ATTR_HOME_OFFSET),
+            positions=data.get(ATTR_POSITIONS),
+        )
+
+
 # =============================================================================
 # SERVICE REGISTRATION
 # Each service entry needs:
@@ -114,6 +160,11 @@ SERVICES: list[ServiceDefinition] = [
     ServiceDefinition(
         name=SERVICE_UPDATE,
         handler=handle_update,
+    ),
+    ServiceDefinition(
+        name=SERVICE_CALIBRATE,
+        handler=handle_calibrate,
+        schema=CALIBRATE_SCHEMA,
     ),
 ]
 

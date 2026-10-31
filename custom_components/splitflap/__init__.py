@@ -19,6 +19,7 @@ from .const import (
 )
 from .coordinator import SplitFlapCoordinator, storage_key
 from .services import (
+    SERVICE_CALIBRATE,
     SERVICE_SCAN,
     SERVICE_SEND_TEXT,
     SERVICE_SYNC,

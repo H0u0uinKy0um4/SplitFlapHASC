@@ -770,3 +770,100 @@ class SplitFlapCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         payload = json.dumps({"action": "update_data"})
         await mqtt.async_publish(self.hass, topic, payload)
         _LOGGER.info("Requested update data %s", topic)
+
+    async def calibrate_module(
+        self,
+        *,
+        module_id: int | str,
+        action: str,
+        index: int | None = None,
+        flap: str | None = None,
+        home_offset: int | None = None,
+        positions: dict[str, Any] | None = None,
+    ) -> None:
+        """Send a calibration command to one module.
+
+        ``action`` is one of ``goto``, ``home``, ``apply``, ``clear_map`` or
+        ``refresh``. ``apply`` persists a new home offset and the supplied
+        position-map entries, then asks the slave to re-home.
+        """
+        cleaned_positions: dict[int, int] = {}
+        if isinstance(positions, dict):
+            for key, value in positions.items():
+                entry_index = _coerce_optional_int(key)
+                entry_position = _coerce_optional_int(value)
+                if (
+                    entry_index is not None
+                    and 0 <= entry_index < 64
+                    and entry_position is not None
+                    and 0 <= entry_position <= 65535
+                ):
+                    cleaned_positions[entry_index] = entry_position
+
+        payload: dict[str, Any] = {
+            "action": action,
+            "module": _module_payload_id(module_id),
+        }
+        if action == "goto":
+            if index is not None:
+                payload["index"] = int(index)
+            elif flap:
+                payload["flap"] = str(flap)[0]
+        elif action == "apply":
+            if home_offset is not None:
+                payload["home_offset"] = int(home_offset)
+            if cleaned_positions:
+                payload["positions"] = {
+                    str(key): value for key, value in sorted(cleaned_positions.items())
+                }
+
+        topic = f"{self.prefix}/command/calibrate"
+        await mqtt.async_publish(self.hass, topic, json.dumps(payload))
+        _LOGGER.info("Sent calibration command %s to %s", payload, topic)
+
+        # Reflect the applied values immediately. The firmware publishes fresh
+        # diagnostics once the module has finished re-homing.
+        if action in {"apply", "clear_map"}:
+            self._apply_local_calibration(
+                module_id,
+                home_offset if action == "apply" else None,
+                cleaned_positions if action == "apply" else None,
+                clear_map=action == "clear_map",
+            )
+
+    @callback
+    def _apply_local_calibration(
+        self,
+        module_id: int | str,
+        home_offset: int | None,
+        positions: dict[int, int] | None,
+        *,
+        clear_map: bool = False,
+    ) -> None:
+        """Optimistically update a module after a calibration apply."""
+        modules = self.data.get("modules")
+        if not isinstance(modules, dict):
+            return
+
+        key = str(module_id)
+        module = modules.get(key)
+        if not isinstance(module, dict):
+            return
+
+        updated_module = dict(module)
+        if home_offset is not None:
+            updated_module["home_offset"] = int(home_offset)
+
+        if clear_map:
+            updated_module["map_of_positions"] = {}
+        elif positions:
+            merged = normalize_position_map(
+                updated_module.get("map_of_positions")
+            ) or {}
+            merged.update({str(index): position for index, position in positions.items()})
+            updated_module["map_of_positions"] = merged
+
+        updated_modules = dict(modules)
+        updated_modules[key] = updated_module
+        self.async_set_updated_data({**self.data, "modules": updated_modules})
+        self._schedule_save()
