@@ -8,7 +8,7 @@
  * dialog, but the card works without per-module entities.
  */
 
-const SPLITFLAP_CARD_VERSION = "1.6.4";
+const SPLITFLAP_CARD_VERSION = "1.6.5";
 const MODULE_ID_ATTR = "splitflap_module_id";
 const MODULE_PREFIX_ATTR = "splitflap_prefix";
 const LAYOUT_STORAGE_PREFIX = "splitflap-card-layout:";
@@ -2141,22 +2141,21 @@ class SplitFlapCard extends HTMLElement {
       this._closeBoardCalibration();
       return;
     }
-    const modules = this._collectModules(
-      this._hass ? this._hass.states[this._config?.modules_sensor] : null,
-      this._hass ? this._hass.states[this._config?.status_sensor] : null
-    );
+    const modules = this._boardModules();
     const targetSteps = {};
     for (const m of modules) targetSteps[m.id] = 0;
     this._boardCalibration = {
       active: true,
+      mode: "home",
       referenceIndex: 0,
-      stride: 8,
-      skip: {},
+      sequence: [0],
+      seqPos: 0,
       targetSteps,
-      message: "Start with space (index 0) to fix home offset first.",
+      message: "Start with Home (space) to fix home offset first. Nudge each module until green, then Next.",
       messageError: false,
+      applying: false,
     };
-    // Send display text with the reference flap on all modules.
+    this._boardCalibrationSetupSequence();
     this._boardCalibrationSendReference();
     this._renderBoardCalibration();
   }
@@ -2188,13 +2187,31 @@ class SplitFlapCard extends HTMLElement {
         : {};
   }
 
+  _boardCalibrationSetupSequence() {
+    const bc = this._boardCalibration;
+    if (!bc) return;
+    if (bc.mode === "home") {
+      bc.sequence = [0];
+    } else if (bc.mode === "every8") {
+      bc.sequence = [0, 8, 16, 24, 32, 40, 48, 56];
+    } else if (bc.mode === "all") {
+      bc.sequence = Array.from({ length: 64 }, (_, i) => i);
+    } else if (bc.mode === "single") {
+      bc.sequence = [bc.singleRef || 0];
+    }
+    bc.seqPos = 0;
+    bc.referenceIndex = bc.sequence[0];
+    bc.targetSteps = {};
+    for (const m of this._boardModules()) bc.targetSteps[m.id] = 0;
+  }
+
   async _boardCalibrationSendReference() {
     if (!this._boardCalibration || !this._hass) return;
     const bc = this._boardCalibration;
     const modules = this._boardModules();
-    // Send the reference character to every module via the integration's
-    // send_text service (repeats the character across all modules).
-    const refChar = this._flapCharForIndex(bc.referenceIndex, modules[0] || {});
+    const refChar = modules.length
+      ? this._flapCharForIndex(bc.referenceIndex, modules[0])
+      : " ";
     const text = modules.map(() => refChar).join("");
     try {
       await this._hass.callService("splitflap", "send_text", { text });
@@ -2223,163 +2240,165 @@ class SplitFlapCard extends HTMLElement {
     if (!panel || !body || !this._boardCalibration) return;
     try {
       panel.hidden = false;
-    const bc = this._boardCalibration;
-    const modules = this._boardModules();
+      const bc = this._boardCalibration;
+      const modules = this._boardModules();
+      body.innerHTML = "";
 
-    body.innerHTML = "";
+      // Top bar
+      const topBar = document.createElement("div");
+      topBar.className = "board-calibration-topbar";
 
-    // Top bar
-    const topBar = document.createElement("div");
-    topBar.className = "board-calibration-topbar";
-
-    const refLabel = document.createElement("label");
-    refLabel.textContent = "Reference flap: ";
-    const refSelect = document.createElement("select");
-    for (let i = 0; i < 64; i++) {
-      const opt = document.createElement("option");
-      opt.value = String(i);
-      const m = modules[0];
-      opt.textContent = m ? this._flapLabel(
-        typeof (this._firstValue(this._boardModuleAttrs(m), MODULE_STAT_ALIASES.flap_list)) === "string"
-          ? Array.from(this._firstValue(this._boardModuleAttrs(m), MODULE_STAT_ALIASES.flap_list))
-          : [],
-        i
-      ) : `#${i}`;
-      refSelect.append(opt);
-    }
-    refSelect.value = String(bc.referenceIndex);
-    refSelect.addEventListener("change", () => {
-      bc.referenceIndex = Number(refSelect.value);
-      bc.targetSteps = {};
-      for (const m of modules) { bc.targetSteps[m.id] = 0; }
-      this._boardCalibrationSendReference();
-      this._renderBoardCalibration();
-    });
-
-    const strideLabel = document.createElement("label");
-    strideLabel.textContent = " Stride: ";
-    const strideSelect = document.createElement("select");
-    for (const s of [1, 2, 4, 8]) {
-      const opt = document.createElement("option");
-      opt.value = String(s);
-      opt.textContent = s === 1 ? "All flaps" : `Every ${s}`;
-      strideSelect.append(opt);
-    }
-    strideSelect.value = String(bc.stride);
-    strideSelect.addEventListener("change", () => {
-      bc.stride = Number(strideSelect.value);
-      this._renderBoardCalibration();
-    });
-
-    const measureAllBtn = document.createElement("button");
-    measureAllBtn.className = "btn btn-secondary";
-    measureAllBtn.textContent = "Measure all";
-    measureAllBtn.addEventListener("click", () => {
-      bc.stride = 1;
-      strideSelect.value = "1";
-      this._renderBoardCalibration();
-    });
-
-    const applyBtn = document.createElement("button");
-    applyBtn.className = "btn btn-primary";
-    applyBtn.textContent = "Apply all corrections";
-    applyBtn.addEventListener("click", () => this._boardCalibrationApplyAll());
-
-    const exitBtn = document.createElement("button");
-    exitBtn.className = "btn btn-secondary";
-    exitBtn.textContent = "Exit";
-    exitBtn.addEventListener("click", () => this._closeBoardCalibration());
-
-    refLabel.append(refSelect);
-    strideLabel.append(strideSelect);
-    topBar.append(refLabel, strideLabel, measureAllBtn, applyBtn, exitBtn);
-    body.append(topBar);
-
-    // Hint
-    const hint = document.createElement("div");
-    hint.className = "calibration-hint";
-    hint.textContent = bc.message || "Start with space (index 0) to fix home offset first. Use ◀/▶ flap for coarse, step for fine.";
-    body.append(hint);
-
-    // Module tiles
-    const grid = document.createElement("div");
-    grid.className = "board-calibration-grid";
-    let aligned = 0;
-    let total = 0;
-    for (const m of modules) {
-      if (bc.skip[m.id]) continue;
-      total += 1;
-      const attrs = this._boardModuleAttrs(m);
-      const totalSteps = Number(this._firstValue(attrs, MODULE_STAT_ALIASES.total_steps)) || 4096;
-      const stepPerFlap = totalSteps / 64;
-      const targetStep = bc.targetSteps[m.id] || 0;
-      const nudge = Math.trunc(targetStep / stepPerFlap);
-      const nudgeSteps = targetStep - nudge * stepPerFlap;
-      if (targetStep === 0) aligned += 1;
-
-      const tile = document.createElement("div");
-      tile.className = "board-calibration-tile";
-      const off = nudge !== 0 || nudgeSteps !== 0;
-      tile.classList.add(off ? "off" : "ok");
-
-      const idSpan = document.createElement("span");
-      idSpan.className = "bct-id";
-      idSpan.textContent = `#${m.id}`;
-
-      const refChar = document.createElement("span");
-      refChar.className = "bct-char";
-      refChar.textContent = this._flapCharForIndex(bc.referenceIndex, m);
-
-      const counter = document.createElement("span");
-      counter.className = "bct-counter";
-      const parts = [];
-      if (nudge !== 0) parts.push(`${nudge > 0 ? "+" : ""}${nudge} flaps`);
-      if (nudgeSteps !== 0) parts.push(`${nudgeSteps > 0 ? "+" : ""}${nudgeSteps} steps`);
-      counter.textContent = parts.length ? parts.join(", ") : "aligned";
-
-      const flapControls = document.createElement("div");
-      flapControls.className = "bct-controls";
-      const flapLeft = document.createElement("button");
-      flapLeft.textContent = "◀ flap";
-      const flapRight = document.createElement("button");
-      flapRight.textContent = "flap ▶";
-      flapLeft.addEventListener("click", () => this._boardNudge(m.id, -1, 0));
-      flapRight.addEventListener("click", () => this._boardNudge(m.id, +1, 0));
-
-      const stepControls = document.createElement("div");
-      stepControls.className = "bct-controls bct-step";
-      const stepLeft = document.createElement("button");
-      stepLeft.textContent = "◀ step";
-      const stepRight = document.createElement("button");
-      stepRight.textContent = "step ▶";
-      stepLeft.addEventListener("click", () => this._boardNudge(m.id, 0, -1));
-      stepRight.addEventListener("click", () => this._boardNudge(m.id, 0, +1));
-
-      const skipLabel = document.createElement("label");
-      skipLabel.className = "bct-skip";
-      const skipInput = document.createElement("input");
-      skipInput.type = "checkbox";
-      skipInput.checked = !!bc.skip[m.id];
-      skipInput.addEventListener("change", () => {
-        bc.skip[m.id] = skipInput.checked;
+      const modeLabel = document.createElement("label");
+      modeLabel.textContent = "Mode: ";
+      const modeSelect = document.createElement("select");
+      for (const [value, label] of [
+        ["home", "Home (space)"],
+        ["every8", "Every 8th flap"],
+        ["all", "All flaps"],
+        ["single", "Single flap"],
+      ]) {
+        const opt = document.createElement("option");
+        opt.value = value;
+        opt.textContent = label;
+        modeSelect.append(opt);
+      }
+      modeSelect.value = bc.mode;
+      modeSelect.addEventListener("change", () => {
+        bc.mode = modeSelect.value;
+        this._boardCalibrationSetupSequence();
+        this._boardCalibrationSendReference();
         this._renderBoardCalibration();
       });
-      skipLabel.append(skipInput, document.createTextNode(" skip"));
 
-      flapControls.append(flapLeft, flapRight);
-      stepControls.append(stepLeft, stepRight);
-      tile.append(idSpan, refChar, counter, flapControls, stepControls, skipLabel);
-      grid.append(tile);
-    }
-    body.append(grid);
+      const singleRefWrap = document.createElement("span");
+      if (bc.mode === "single") {
+        const srLabel = document.createElement("label");
+        srLabel.textContent = " Flap: ";
+        const srSelect = document.createElement("select");
+        for (let i = 0; i < 64; i++) {
+          const opt = document.createElement("option");
+          opt.value = String(i);
+          const m = modules[0];
+          opt.textContent = m
+            ? this._flapLabel(
+                typeof this._firstValue(this._boardModuleAttrs(m), MODULE_STAT_ALIASES.flap_list) === "string"
+                  ? Array.from(this._firstValue(this._boardModuleAttrs(m), MODULE_STAT_ALIASES.flap_list))
+                  : [],
+                i
+              )
+            : `#${i}`;
+          srSelect.append(opt);
+        }
+        srSelect.value = String(bc.singleRef || 0);
+        srSelect.addEventListener("change", () => {
+          bc.singleRef = Number(srSelect.value);
+          bc.sequence = [bc.singleRef];
+          bc.seqPos = 0;
+          bc.referenceIndex = bc.singleRef;
+          bc.targetSteps = {};
+          for (const m of modules) bc.targetSteps[m.id] = 0;
+          this._boardCalibrationSendReference();
+          this._renderBoardCalibration();
+        });
+        srLabel.append(srSelect);
+        singleRefWrap.append(srLabel);
+      }
 
-    const progress = document.createElement("div");
-    progress.className = "board-calibration-progress";
-    progress.textContent = `${aligned} / ${total} modules aligned`;
-    body.append(progress);
+      const progressLabel = document.createElement("span");
+      progressLabel.textContent = `  Flap ${bc.referenceIndex} (${bc.seqPos + 1}/${bc.sequence.length})`;
+
+      const nextBtn = document.createElement("button");
+      nextBtn.className = "btn btn-primary";
+      const isLast = bc.seqPos >= bc.sequence.length - 1;
+      nextBtn.textContent = isLast ? "Finish" : "Next";
+      nextBtn.addEventListener("click", () => this._boardCalibrationNext());
+
+      const exitBtn = document.createElement("button");
+      exitBtn.className = "btn btn-secondary";
+      exitBtn.textContent = "Exit";
+      exitBtn.addEventListener("click", () => this._closeBoardCalibration());
+
+      modeLabel.append(modeSelect);
+      topBar.append(modeLabel, singleRefWrap, progressLabel, nextBtn, exitBtn);
+      body.append(topBar);
+
+      // Hint
+      const hint = document.createElement("div");
+      hint.className = "calibration-hint";
+      hint.textContent = bc.message || "Nudge each module until green, then Next.";
+      body.append(hint);
+
+      // Module tiles
+      const grid = document.createElement("div");
+      grid.className = "board-calibration-grid";
+      let aligned = 0;
+      let total = 0;
+      for (const m of modules) {
+        total += 1;
+        const attrs = this._boardModuleAttrs(m);
+        const totalSteps = Number(this._firstValue(attrs, MODULE_STAT_ALIASES.total_steps)) || 4096;
+        const stepPerFlap = totalSteps / 64;
+        const targetStep = bc.targetSteps[m.id] || 0;
+        const basePos = Math.round(bc.referenceIndex * stepPerFlap);
+        const correction = targetStep;
+        const nudge = Math.trunc(correction / stepPerFlap);
+        const nudgeSteps = correction - nudge * stepPerFlap;
+        if (correction === 0) aligned += 1;
+
+        const tile = document.createElement("div");
+        tile.className = "board-calibration-tile";
+        tile.classList.add(correction === 0 ? "ok" : "off");
+
+        const idSpan = document.createElement("span");
+        idSpan.className = "bct-id";
+        idSpan.textContent = `#${m.id}`;
+
+        const refChar = document.createElement("span");
+        refChar.className = "bct-char";
+        refChar.textContent = this._flapCharForIndex(bc.referenceIndex, m);
+
+        const counter = document.createElement("span");
+        counter.className = "bct-counter";
+        const parts = [];
+        if (nudge !== 0) parts.push(`${nudge > 0 ? "+" : ""}${nudge} flaps`);
+        if (nudgeSteps !== 0) parts.push(`${nudgeSteps > 0 ? "+" : ""}${nudgeSteps} steps`);
+        counter.textContent = parts.length ? parts.join(", ") : "aligned";
+
+        const flapControls = document.createElement("div");
+        flapControls.className = "bct-controls";
+        const flapLeft = document.createElement("button");
+        flapLeft.textContent = "◀ flap";
+        const flapRight = document.createElement("button");
+        flapRight.textContent = "flap ▶";
+        flapLeft.addEventListener("click", () => this._boardNudge(m.id, -1, 0));
+        flapRight.addEventListener("click", () => this._boardNudge(m.id, +1, 0));
+
+        const stepControls = document.createElement("div");
+        stepControls.className = "bct-controls bct-step";
+        for (const amt of [1, 10, 100]) {
+          const sl = document.createElement("button");
+          sl.textContent = `◀${amt}`;
+          const sr = document.createElement("button");
+          sr.textContent = `${amt}▶`;
+          sl.addEventListener("click", () => this._boardNudge(m.id, 0, -amt));
+          sr.addEventListener("click", () => this._boardNudge(m.id, 0, +amt));
+          stepControls.append(sl, sr);
+        }
+
+        flapControls.append(flapLeft, flapRight);
+        tile.append(idSpan, refChar, counter, flapControls, stepControls);
+        grid.append(tile);
+      }
+      body.append(grid);
+
+      const progress = document.createElement("div");
+      progress.className = "board-calibration-progress";
+      progress.textContent = `${aligned} / ${total} modules aligned`;
+      body.append(progress);
     } catch (err) {
       console.error("[splitflap-card] Board calibration render failed:", err);
-      panel.hidden = true;
+      const panel = this._refs.boardCalibration;
+      if (panel) panel.hidden = true;
       this._boardCalibration = null;
     }
   }
@@ -2394,16 +2413,19 @@ class SplitFlapCard extends HTMLElement {
     const totalSteps = Number(this._firstValue(attrs, MODULE_STAT_ALIASES.total_steps)) || 4096;
     const stepPerFlap = totalSteps / 64;
 
-    const delta = Math.round(flapDelta * stepPerFlap + stepDelta);
     const cur = bc.targetSteps[moduleId] || 0;
+    const delta = Math.round(flapDelta * stepPerFlap + stepDelta);
     bc.targetSteps[moduleId] = cur + delta;
 
-    const target = ((bc.targetSteps[moduleId] % totalSteps) + totalSteps) % totalSteps;
+    const basePos = Math.round(bc.referenceIndex * stepPerFlap);
+    const correction = bc.targetSteps[moduleId];
+    const finalTarget = ((basePos + correction) % totalSteps + totalSteps) % totalSteps;
+
     try {
       await this._hass.callService("splitflap", "calibrate", {
         action: "step",
         module_id: Number(moduleId),
-        steps: target,
+        steps: finalTarget,
       });
     } catch (err) {
       console.error("[splitflap-card] board nudge failed:", err);
@@ -2411,15 +2433,15 @@ class SplitFlapCard extends HTMLElement {
     this._renderBoardCalibration();
   }
 
-  async _boardCalibrationApplyAll() {
+  async _boardCalibrationNext() {
     if (!this._boardCalibration || !this._hass) return;
     const bc = this._boardCalibration;
     const modules = this._boardModules();
     const refIndex = bc.referenceIndex;
     const isHomePass = refIndex === 0;
 
+    // Auto-apply corrections for current reference flap
     for (const m of modules) {
-      if (bc.skip[m.id]) continue;
       const targetStep = bc.targetSteps[m.id] || 0;
       if (targetStep === 0) continue;
 
@@ -2427,11 +2449,14 @@ class SplitFlapCard extends HTMLElement {
       const totalSteps = Number(this._firstValue(attrs, MODULE_STAT_ALIASES.total_steps)) || 4096;
       const homeOffset = Number(this._firstValue(attrs, MODULE_STAT_ALIASES.home_offset)) || 0;
       const stepPerFlap = totalSteps / 64;
-      const correctionSteps = targetStep;
+      const correction = targetStep; // already relative to reference base? No...
 
+      // correction should be targetStep (which is relative to reference base)
+      // For home pass: newOffset = homeOffset + correction
+      // For map pass: mapEntry = refIndex*stepPerFlap + correction
       try {
         if (isHomePass) {
-          const newOffset = ((homeOffset + correctionSteps) % totalSteps + totalSteps) % totalSteps;
+          const newOffset = ((homeOffset + correction) % totalSteps + totalSteps) % totalSteps;
           await this._hass.callService("splitflap", "calibrate", {
             action: "apply",
             module_id: Number(m.id),
@@ -2439,8 +2464,8 @@ class SplitFlapCard extends HTMLElement {
             clear_map: true,
           });
         } else {
-          const basePos = Math.floor((refIndex * totalSteps) / 64);
-          const newTarget = ((basePos + correctionSteps) % totalSteps + totalSteps) % totalSteps;
+          const basePos = Math.round(refIndex * stepPerFlap);
+          const newTarget = ((basePos + correction) % totalSteps + totalSteps) % totalSteps;
           await this._hass.callService("splitflap", "calibrate", {
             action: "apply",
             module_id: Number(m.id),
@@ -2448,16 +2473,22 @@ class SplitFlapCard extends HTMLElement {
           });
         }
       } catch (err) {
-        console.error("[splitflap-card] board apply failed for module", m.id, err);
+        console.error("[splitflap-card] auto-apply failed for module", m.id, err);
       }
     }
 
-    // Reset nudges
-    for (const m of modules) {
-      bc.targetSteps[m.id] = 0;
+    // Advance to next reference
+    bc.seqPos += 1;
+    if (bc.seqPos >= bc.sequence.length) {
+      bc.message = "All done! Re-send display text to restore the board.";
+      bc.seqPos = bc.sequence.length - 1;
+    } else {
+      bc.referenceIndex = bc.sequence[bc.seqPos];
+      bc.targetSteps = {};
+      for (const m of modules) bc.targetSteps[m.id] = 0;
+      bc.message = `Moved to flap ${bc.referenceIndex}. Nudge until green, then Next.`;
+      await this._boardCalibrationSendReference();
     }
-    bc.message = "Corrections applied. Re-home and verify, or change reference flap for per-flap mapping.";
-    bc.messageError = false;
     this._renderBoardCalibration();
   }
 
