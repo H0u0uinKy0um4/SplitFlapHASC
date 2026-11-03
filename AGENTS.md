@@ -158,29 +158,25 @@ Implemented in `SplFlp_Slave_Attiny` (see its `PROTOCOL.md`):
       `homeOffset`; format version tagged at EEPROM address 204.
 - [x] Slave: failed/unreachable moves stop, mark the position unknown and
       never report success.
-- [ ] Master: query `s` and publish `current_step`, `busy` and
-      `position_known`. Today the master only sends `d`, so HA still sees a
-      stale/zero position.
-- [ ] Master: ACK/busy instead of fixed timeouts and blind refresh timers.
-- [ ] HA: `fit_drum()` + "record current position" flow, map shift removed.
-- [ ] HA: rebuild the board calibration flow on `r` (record) instead of
-      computing map entries in JavaScript.
+- [x] Master: query `s` and publish `current_step`, `busy` and
+      `position_known`.
+- [x] Master: poll `s` per module after movement instead of fixed refresh
+      timers; validate the module id on every response.
+- [x] HA/coordinator: `record` action, map shift removed, `busy` /
+      `position_known` forwarded, fallback includes `home_offset`.
+- [x] HA/card: board calibration rebuilt on `step` + `record`; per-module panel
+      shows live state and records the current position.
+- [ ] HA: optional `fit_drum()` (Theil&ndash;Sen + Fourier residual fit) once
+      enough recorded flaps exist. Direct `record` is the supported flow today.
+- [ ] Master: ACK/busy instead of polling timeouts (works today, but polling
+      still uses fixed `STATE_TIMEOUT_MS`).
 
 #### Known pitfalls (verify before trusting old calibration)
 
-- `SplFlp_Master/src/display/DisplayData.cpp`: `sendQueryAndWait()` accepts
-  any response without checking the module id, so a busy module is marked
-  offline.
-- `SplFlp_Master/src/network/WifiMqttHandler.cpp`: refresh after homing is a
-  blind `stepsPerRev * 2 + 3000` timer, not a completion signal, and the
-  status payload does not carry `current_step`, `busy` or `position_known`.
-- `custom_components/splitflap/coordinator.py`: `_apply_local_calibration()`
-  is dead code, and `calibrate_module()` shifts cached map entries when the
-  home offset changes. Both must go now that the slave owns the coordinates.
-- `frontend/splitflap-card.js` (board calibration): clears the map only when
-  the home correction is non-zero, and computes per-flap targets from
-  `basePos` instead of the existing map target, so re-running it over a
-  non-empty map corrupts it.
+- Polling a moving module works because the slave services RS485 during motion,
+  but `STATE_TIMEOUT_MS` must stay short enough not to stall the MQTT loop.
+- `apply` is kept for compatibility and still writes exactly the supplied home
+  offset and map entries. It must never shift or re-project existing entries.
 - Old firmware maps were stored relative to flap 0. The slave migrates them
   once by adding `homeOffset`; do not repeat that shift in HA or the card.
 - `SplFlp_Slave_Attiny` used to be outside git. It is a git repository now;

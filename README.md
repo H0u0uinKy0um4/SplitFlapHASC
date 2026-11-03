@@ -44,8 +44,9 @@ A complete Home Assistant integration and interactive Lovelace card for DIY RS48
     already known. Much faster than a full scan; it never adds or removes
     modules.
   - `splitflap.calibrate`: Drive one module and persist calibration data.
-    Actions: `goto` (move to a flap index), `home`, `apply` (write home offset
-    and position-map entries), `clear_map`, and `refresh`.
+    Actions: `goto` (move to a flap index), `step` (absolute nudge), `home`,
+    `record` (store the live position as a flap index), `apply` (write home
+    offset and position-map entries), `clear_map`, and `refresh`.
 - **Entities Provided**:
   - `text.splitflap_display_text`: Display text input.
   - `sensor.splitflap_master_status`: Master ESP32 connection state (`online`, `offline`).
@@ -94,43 +95,34 @@ disconnected board no longer shows placeholder flaps.
 ### Calibrating (board-level, recommended)
 
 Click **Calibrate board** on the display. All modules show the same reference
-flap (start with space to fix the home offset). Each module tile has ◀/▶
-buttons for coarse (flap) and fine (step) nudging. Nudge until the tile turns
-green, then **Apply all corrections**. Use the stride selector to measure every
-Nth flap, or **Measure all** for a full pass. Per-module **Skip** checkboxes
-exclude inaccessible modules.
+flap. Each tile reports the slave's live position and whether it is moving or
+has lost its position, and offers ◀/▶ nudges of one flap plus ◀/▶ fine nudges
+of 1, 10 or 50 steps. Nudge a module until the reference flap is centred, then
+press **Record** on that tile, or **Record all** to store every module at once.
+
+Recording stores the slave's current `pos` as the position-map entry for the
+reference flap. When the reference is flap 0, the same value also becomes that
+module's home offset. Press **Next** to advance to the next flap in the
+selected stride; **Clear position map** erases the map without touching the
+home offset.
 
 ### Calibrating (advanced, per-module)
 
-Click a module tile, then **Advanced calibration** for the detailed single-flap
-flow with dropdowns and manual sample recording.
+Click a module tile, then **Calibrate** in its details panel. The panel shows
+the live position, motion state and current position map. Use **Home module**,
+**Go to flap**, the flap/step nudges, and **Record**. Pick the flap index that
+matches what is centred on the reel, then press **Record**:
 
-Click a module tile, then **Calibrate** in its details panel. Calibration is
-split into two independent steps so the global Home reference and the per-flap
-position map can never fight each other:
+- `record 0` stores the current position as flap 0 and as the home offset.
+- `record i` (i > 0) stores the current position as map entry `i` only.
 
-1. **Align Home first.** Press **Home module** and wait until the reel stops.
-   Then choose the flap the reel is physically showing in **Home landed on**
-   and press **Apply Home offset**. This changes only the home offset (and, by
-   default, clears the position map so stale entries cannot fight the new
-   reference). Repeat until Home shows flap #0 (space).
-2. **Map individual flaps (optional).** Only after Home shows space, confirm the
-   **Home shows flap #0** checkbox. Then choose an **Expected flap**, press
-   **Send expected**, compare the reel and select the flap it is physically
-   showing, then press **Record pair**. Sample at least four flaps spread around
-   the drum. Press **Apply position map** to write per-flap targets. This step
-   never changes the home offset.
-3. Re-send the display text when you are done calibrating.
+Changing the home offset never shifts or rewrites existing position-map
+entries; coordinates belong to the slave and Home Assistant only forwards
+values. Re-send the display text when you are done calibrating.
 
-The Home offset is corrected from the single observation of which flap Home lands
-on; the position map is corrected from expected-vs-actual flap pairs. Existing
-position-map entries are shifted when the home offset changes, and flaps that
-were not sampled are left untouched unless you enable the advanced
-interpolation option. **Clear position map** removes every entry while keeping
-the home offset.
-
-This workflow uses the module's existing RS485 command set, so no slave
-reflash is required. The updated master firmware is required.
+This workflow requires slave firmware that implements `m<id>s` (live state) and
+`m<id>r<index>` (record), plus master firmware that publishes `current_step`,
+`busy` and `position_known`.
 
 ### Card Configuration Example (YAML)
 
@@ -220,8 +212,10 @@ position map.
 | `flap_position` | Step position for that flap, from the position map or the same fallback the slave uses. |
 | `flap_list` | FlapArray: ordered drum/flap characters (64 entries on the stock firmware). |
 | `map_of_positions` | PositionMap: flap index to calibrated step position for offsets that are set. |
-| `current_step` | Current motor position in half-steps, when reported by firmware. |
+| `current_step` | Current motor position in half-steps, reported by firmware (measured from the Hall edge). |
 | `current_index` | Current flap index on the drum, when reported by firmware. |
+| `busy` | Whether the module is currently moving. |
+| `position_known` | Whether the firmware still trusts its position after the last move. |
 | `auto_homing` | Whether automatic homing is enabled. |
 | `home_offset` | Steps from the Hall sensor edge to flap 0. |
 | `total_steps` | Total half-steps per revolution. |
@@ -251,16 +245,20 @@ Example status payload:
       "online": true,
       "home_offset": 2832,
       "total_steps": 4096,
+      "current_step": 2832,
+      "busy": false,
+      "position_known": true,
       "map_of_positions": "0=0,16=1024,32=2048,48=3072"
     }
   ]
 }
 ```
 
-The stock master firmware fills these fields by querying each slave with
-`m<id>d` (configuration and position map) and `m<id>l` (64-character drum) at
-boot and during a bus scan. `flap_list` and `map_of_positions` then appear in the
-module's more-info dialog and in the card's module panel.
+The master queries each slave with `m<id>d` (configuration and position map),
+`m<id>l` (64-character drum) and `m<id>s` (live `pos`, `busy`,
+`position_known`). It re-polls `s` while a module moves, so `current_step`,
+`busy` and `position_known` stay current. `flap_list` and `map_of_positions`
+then appear in the module's more-info dialog and in the card's module panel.
 
 ---
 

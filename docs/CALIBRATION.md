@@ -15,10 +15,12 @@ Calibration spans three layers:
 **Hard rule:** coordinate math lives in exactly one layer, the slave. The
 master and Home Assistant forward values; they never re-project them.
 
-> **Status:** the slave firmware implements this design (hall-edge origin,
-> non-blocking forward-only motion, `s` state query, `r` record command). The
-> ESP32 master and the Home Assistant integration still follow the old model.
-> See [Current status](#current-status) for the remaining work.
+> **Status:** the slave firmware, ESP32 master and Home Assistant integration all
+> implement this design (hall-edge origin, non-blocking forward-only motion, `s`
+> state query, `r` record command, live `current_step` / `busy` /
+> `position_known`, board and per-module record flows). The optional
+> `fit_drum()` fitting step is not implemented yet; direct `record` is the
+> supported flow. See [Current status](#current-status).
 
 ---
 
@@ -267,14 +269,16 @@ anything else.
 | Command dispatch and wire formats | `SplFlp_Slave_Attiny/src/RS485Handler.cpp`, `PROTOCOL.md` |
 | RS485 transport and module cache | `SplFlp_Master/src/display/*`, `src/RS485.cpp` |
 | MQTT `calibrate` handling | `SplFlp_Master/src/network/WifiMqttHandler.cpp` |
-| Fitting (`fit_drum`) | `custom_components/splitflap/calibration.py` (to be added) |
+| Fitting (`fit_drum`) | `custom_components/splitflap/calibration.py` (optional, not yet added) |
 | Service schema and dispatch | `custom_components/splitflap/services.py`, `coordinator.py` |
 | Calibration UI | `custom_components/splitflap/frontend/splitflap-card.js` |
 
 The authoritative slave command reference is `SplFlp_Slave_Attiny/PROTOCOL.md`.
 
-Keep `fit_drum()` a pure function with no external dependencies (the repository
-forbids new dependencies). It must be unit-testable without Home Assistant.
+The direct `record` flow does not need any fitting code: each `r` stores the
+slave's own `pos`. If `fit_drum()` is added later, keep it a pure function with
+no external dependencies (the repository forbids new dependencies). It must be
+unit-testable without Home Assistant.
 
 ---
 
@@ -301,17 +305,30 @@ Implemented in `SplFlp_Slave_Attiny` (authoritative details in its
       `ADDR_SAVED_POS` / `ADDR_SAVED_INDEX`; a boot without auto-home starts
       with an unknown position and homes on the next move.
 
+Implemented in `SplFlp_Master`:
+
+- [x] Query `s` and publish `current_step`, `busy` and `position_known` in the
+      status payload.
+- [x] Poll `s` per module after movement instead of a blind refresh timer.
+- [x] Validate the module id in every RS485 response.
+- [x] Handle the `record` action (`r`), then refresh the module config.
+
+Implemented in this repository:
+
+- [x] `record` action in the service and coordinator; map shift removed from
+      `coordinator.calibrate_module()`.
+- [x] `busy` / `position_known` forwarded to module attributes, and
+      `flap_position` fallback includes `home_offset`.
+- [x] Board calibration rebuilt on `step` + `record`; per-module panel shows
+      live state and records the current position.
+- [x] `apply` kept for compatibility; it writes exactly the supplied values and
+      never shifts existing entries.
+
 Remaining work, in the order it should be done:
 
-- [ ] Master: query `s` and publish `current_step`, `busy` and
-      `position_known` in the status payload.
-- [ ] Master: ACK/busy instead of fixed timeouts and the blind refresh timer.
-- [ ] Master: validate the module id in `sendQueryAndWait()`.
-- [ ] HA: add `calibration.py` (`fit_drum()`), the record flow, and remove the
-      map shift from `coordinator.calibrate_module()`.
-- [ ] HA: rebuild the board calibration flow on `r` (record) instead of
-      computing map entries in JavaScript.
-- [ ] HA: stop treating the stale `current_step` from the master as truth.
+- [ ] HA: optional `fit_drum()` (`calibration.py`) to fit `map[i]` from many
+      recorded flaps. Direct `record` remains the supported flow.
+- [ ] Master: ACK/busy instead of fixed polling timeouts.
 
 Do not change the existing public service names, entity IDs or MQTT topics.
 New calibration fields may be added to the module payload; never rename the
@@ -325,23 +342,14 @@ Verify these before trusting an existing calibration or an old bug report.
 The slave-side pitfalls are fixed in the current firmware; they are listed in
 `SplFlp_Slave_Attiny` history and must not be reintroduced.
 
-- `SplFlp_Master/src/display/DisplayData.cpp` &mdash; `sendQueryAndWait()`
-  accepts any response without checking that the module id matches. A module
-  that is busy moving does not answer within 40 ms and is marked offline. The
-  slave now has an `s` query for exactly this case, but the master does not
-  use it yet.
-- `SplFlp_Master/src/network/WifiMqttHandler.cpp` &mdash; after a home or
-  apply, the refresh is scheduled with a blind `stepsPerRev * 2 + 3000` timer
-  instead of polling `s` until `busy` clears. The status payload also does not
-  carry `current_step`, `busy` or `position_known`.
-- `custom_components/splitflap/coordinator.py` &mdash; `_apply_local_calibration()`
-  is never called, and `calibrate_module()` shifts cached map entries when the
-  home offset changes. Both belong to an architecture that is being replaced;
-  the slave owns the coordinates now.
-- `frontend/splitflap-card.js` &mdash; board calibration clears the map only
-  when the home correction is non-zero, and computes per-flap targets from
-  `basePos` instead of the existing map target. Re-running it over a non-empty
-  map therefore corrupts the map.
+- Polling a moving module works because the slave services RS485 during
+  motion, but `STATE_TIMEOUT_MS` must stay short enough not to stall the MQTT
+  loop.
+- `apply` is kept for compatibility. It must write exactly the supplied home
+  offset and map entries and never shift or re-project existing entries;
+  coordinates belong to the slave.
+- The card and coordinator must not derive map entries from expected-vs-actual
+  flap pairs. Recording uses the slave's live `pos` through `r`.
 - Old firmware maps are stored relative to flap 0. The slave migrates them
   once by adding `homeOffset` and writes `CAL_FORMAT_VERSION` at EEPROM
   address 204. Do not repeat that shift in HA or in the card.

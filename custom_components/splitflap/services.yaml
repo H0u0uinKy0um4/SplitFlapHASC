@@ -45,11 +45,12 @@ calibrate:
   name: Calibrate Module
   description: >-
     Drive one module and persist calibration data. Use action `goto` to move to
-    an expected flap, `home` to re-home, `apply` to write a new home offset
-    and/or position-map entries, `clear_map` to erase the position map, or
-    `refresh` to re-read the module configuration. When `apply` changes the
-    home offset, existing position-map entries not listed in `positions` are
-    shifted to stay valid; set `clear_map` to discard them instead.
+    an expected flap, `step` for an absolute nudge, `home` to re-home, `record`
+    to store the module's current position as the selected flap, `apply` to
+    write a home offset and/or position-map entries, `clear_map` to erase the
+    position map, or `refresh` to re-read the module configuration. `record`
+    index 0 also updates the home offset. Changing the home offset never moves
+    existing position-map entries.
   fields:
     action:
       name: Action
@@ -60,6 +61,7 @@ calibrate:
           options:
             - goto
             - home
+            - record
             - apply
             - clear_map
             - refresh
@@ -76,7 +78,9 @@ calibrate:
           mode: box
     index:
       name: Flap index
-      description: 0-based flap index for the `goto` action.
+      description: >-
+        0-based flap index for the `goto` and `record` actions. Recording index
+        0 also updates the home offset.
       required: false
       example: 1
       selector:
@@ -93,7 +97,9 @@ calibrate:
         text:
     home_offset:
       name: Home offset
-      description: Steps from the Hall sensor edge to flap 0, used by `apply`.
+      description: >-
+        Step position of flap 0, measured from the Hall edge, used by `apply`.
+        Existing map entries are not shifted when this changes.
       required: false
       example: 2704
       selector:
@@ -104,8 +110,8 @@ calibrate:
     positions:
       name: Position map
       description: >-
-        Flap-index to step-position entries written by `apply`. Existing entries
-        not listed here are kept.
+        Flap-index to absolute step-position entries written by `apply`. Entries
+        not listed here are left untouched.
       required: false
       selector:
         object:
@@ -123,8 +129,7 @@ calibrate:
     clear_map:
       name: Clear position map
       description: >-
-        Erase every position-map entry before applying. Used by the card when
-        fixing the home offset so stale entries cannot fight the new reference.
+        Erase every position-map entry before applying. The home offset is kept.
       required: false
       selector:
         boolean:

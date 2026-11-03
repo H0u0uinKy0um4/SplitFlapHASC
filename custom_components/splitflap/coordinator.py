@@ -159,6 +159,14 @@ MODULE_STAT_ALIASES: dict[str, tuple[str, ...]] = {
         "positions",
         "map",
     ),
+    "busy": ("busy", "is_busy", "isBusy", "moving"),
+    "position_known": (
+        "position_known",
+        "positionKnown",
+        "PositionKnown",
+        "position_valid",
+        "positionValid",
+    ),
     "online": ("online", "is_online", "isOnline", "connected"),
     "last_seen": ("last_seen", "lastSeen", "last_seen_ms", "lastSeenMs"),
 }
@@ -313,6 +321,13 @@ def module_stats(module: dict[str, Any]) -> dict[str, Any]:
     if auto_homing is not None:
         stats["auto_homing"] = auto_homing
 
+    for key in ("busy", "position_known"):
+        value = _coerce_optional_bool(
+            _first_module_value(sources, MODULE_STAT_ALIASES[key])
+        )
+        if value is not None:
+            stats[key] = value
+
     online = _coerce_optional_bool(
         _first_module_value(sources, MODULE_STAT_ALIASES["online"])
     )
@@ -346,8 +361,15 @@ def module_stats(module: dict[str, Any]) -> dict[str, Any]:
             if flap_position is None:
                 total_steps = stats.get("total_steps")
                 if isinstance(total_steps, int) and total_steps > 0:
-                    # Same fallback the slave firmware uses for unmapped flaps.
-                    flap_position = flap_index * total_steps // 64
+                    # Same fallback the slave firmware uses for unmapped flaps:
+                    # homeOffset + round(index * N / FLAP_COUNT), modulo N.
+                    home_offset = stats.get("home_offset", 0)
+                    if not isinstance(home_offset, int):
+                        home_offset = 0
+                    flap_position = (
+                        home_offset
+                        + (flap_index * total_steps + 32) // 64
+                    ) % total_steps
             if flap_position is not None:
                 stats["flap_position"] = flap_position
 
@@ -785,15 +807,13 @@ class SplitFlapCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     ) -> None:
         """Send a calibration command to one module.
 
-        ``action`` is one of ``goto``, ``home``, ``apply``, ``clear_map`` or
-        ``refresh``. ``apply`` persists a new home offset and the supplied
-        position-map entries, then asks the slave to re-home.
+        ``action`` is one of ``goto``, ``step``, ``home``, ``record``,
+        ``apply``, ``clear_map`` or ``refresh``. ``record`` stores the slave's
+        live ``pos`` as ``map[index]``; index 0 also updates the home offset.
 
-        Position-map entries are absolute step targets in the module's current
-        home coordinate. When ``apply`` changes the home offset, every existing
-        entry that is *not* supplied explicitly is shifted by the same delta so
-        it keeps pointing at the same physical flap. Set ``clear_map`` to
-        discard them instead.
+        Coordinates belong to the slave. ``apply`` writes exactly the supplied
+        home offset and position-map entries and never shifts existing entries:
+        changing ``home_offset`` does not move the map.
         """
         cleaned_positions: dict[int, int] = {}
         if isinstance(positions, dict):
@@ -808,41 +828,6 @@ class SplitFlapCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 ):
                     cleaned_positions[entry_index] = entry_position
 
-        # When an apply changes the home offset, keep the existing map entries
-        # valid by shifting them by the same delta. Entries explicitly supplied
-        # take precedence (they are already in the new coordinate).
-        if (
-            action == "apply"
-            and not clear_map
-            and home_offset is not None
-        ):
-            module = self.data.get("modules", {}).get(str(module_id))
-            if isinstance(module, dict):
-                stats = module_stats(module)
-                old_offset = stats.get("home_offset")
-                total_steps = stats.get("total_steps")
-                old_positions = stats.get("map_of_positions")
-                if (
-                    isinstance(old_offset, int)
-                    and isinstance(total_steps, int)
-                    and total_steps > 0
-                    and isinstance(old_positions, dict)
-                ):
-                    delta = (old_offset - int(home_offset)) % total_steps
-                    if delta:
-                        for key, value in old_positions.items():
-                            entry_index = _coerce_optional_int(key)
-                            entry_position = _coerce_optional_int(value)
-                            if (
-                                entry_index is not None
-                                and 0 <= entry_index < 64
-                                and entry_position is not None
-                            ):
-                                if entry_index not in cleaned_positions:
-                                    cleaned_positions[entry_index] = (
-                                        entry_position + delta
-                                    ) % total_steps
-
         payload: dict[str, Any] = {
             "action": action,
             "module": _module_payload_id(module_id),
@@ -855,6 +840,9 @@ class SplitFlapCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         elif action == "step":
             if steps is not None:
                 payload["steps"] = int(steps)
+        elif action == "record":
+            if index is not None:
+                payload["index"] = int(index)
         elif action == "apply":
             if home_offset is not None:
                 payload["home_offset"] = int(home_offset)
@@ -868,43 +856,3 @@ class SplitFlapCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         topic = f"{self.prefix}/command/calibrate"
         await mqtt.async_publish(self.hass, topic, json.dumps(payload))
         _LOGGER.info("Sent calibration command %s to %s", payload, topic)
-
-    @callback
-    def _apply_local_calibration(
-        self,
-        module_id: int | str,
-        home_offset: int | None,
-        positions: dict[int, int] | None,
-        *,
-        clear_map: bool = False,
-    ) -> None:
-        """Optimistically update a module after a calibration apply."""
-        modules = self.data.get("modules")
-        if not isinstance(modules, dict):
-            return
-
-        key = str(module_id)
-        module = modules.get(key)
-        if not isinstance(module, dict):
-            return
-
-        updated_module = dict(module)
-        if home_offset is not None:
-            updated_module["home_offset"] = int(home_offset)
-
-        if clear_map:
-            merged = {}
-            if positions:
-                merged.update({str(index): position for index, position in positions.items()})
-            updated_module["map_of_positions"] = merged
-        elif positions:
-            merged = normalize_position_map(
-                updated_module.get("map_of_positions")
-            ) or {}
-            merged.update({str(index): position for index, position in positions.items()})
-            updated_module["map_of_positions"] = merged
-
-        updated_modules = dict(modules)
-        updated_modules[key] = updated_module
-        self.async_set_updated_data({**self.data, "modules": updated_modules})
-        self._schedule_save()

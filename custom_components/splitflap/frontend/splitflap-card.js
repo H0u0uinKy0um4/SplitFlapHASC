@@ -8,7 +8,7 @@
  * dialog, but the card works without per-module entities.
  */
 
-const SPLITFLAP_CARD_VERSION = "1.6.7";
+const SPLITFLAP_CARD_VERSION = "1.7.0";
 const MODULE_ID_ATTR = "splitflap_module_id";
 const MODULE_PREFIX_ATTR = "splitflap_prefix";
 const LAYOUT_STORAGE_PREFIX = "splitflap-card-layout:";
@@ -104,6 +104,14 @@ const MODULE_STAT_ALIASES = {
     "maxSteps",
   ],
   last_seen: ["last_seen", "lastSeen", "last_seen_ms", "lastSeenMs"],
+  busy: ["busy", "is_busy", "isBusy", "moving"],
+  position_known: [
+    "position_known",
+    "positionKnown",
+    "PositionKnown",
+    "position_valid",
+    "positionValid",
+  ],
   map_of_positions: [
     "map_of_positions",
     "mapOfPositions",
@@ -183,303 +191,12 @@ function firstCodePoint(value) {
   return Array.from(text)[0];
 }
 
-function median(values) {
-  if (!Array.isArray(values) || values.length === 0) return 0;
-  const sorted = [...values].sort((a, b) => a - b);
-  const middle = Math.floor(sorted.length / 2);
-  return sorted.length % 2 === 1
-    ? sorted[middle]
-    : (sorted[middle - 1] + sorted[middle]) / 2;
-}
-
 function normalizeStepPosition(value, totalSteps) {
   const total = Number(totalSteps);
   if (!Number.isFinite(total) || total <= 0) return 0;
   return ((Math.round(Number(value)) % total) + total) % total;
 }
 
-function flapDelta(expected, actual, flapCount = 64) {
-  const count = Math.max(Number(flapCount) || 64, 1);
-  const raw = ((Number(actual) - Number(expected)) % count + count) % count;
-  return raw > count / 2 ? raw - count : raw;
-}
-
-/** Shortest signed step difference between two positions on the reel. */
-function signedStepDifference(value, reference, totalSteps) {
-  const total = Number(totalSteps);
-  if (!Number.isFinite(total) || total <= 0) return 0;
-  const raw =
-    ((Number(value) - Number(reference)) % total + total) % total;
-  return raw > total / 2 ? raw - total : raw;
-}
-
-/**
- * Normalize the position map coming from the integration (object) or straight
- * from the firmware (``"8=512,16=1024"``) into ``{index: position}``.
- */
-function parsePositionMap(value, totalSteps, flapCount = 64) {
-  const result = {};
-  const count = Math.max(Number(flapCount) || 64, 1);
-
-  const put = (rawIndex, rawPosition) => {
-    const index = Number.parseInt(rawIndex, 10);
-    const position = Number(rawPosition);
-    if (!Number.isInteger(index) || index < 0 || index >= count) return;
-    if (!Number.isFinite(position) || position < 0) return;
-    result[index] = normalizeStepPosition(position, totalSteps);
-  };
-
-  if (value === undefined || value === null || value === "") return result;
-
-  if (typeof value === "string") {
-    for (const part of value.split(",")) {
-      const separator = part.indexOf("=");
-      if (separator < 0) continue;
-      put(part.slice(0, separator), part.slice(separator + 1));
-    }
-    return result;
-  }
-
-  if (Array.isArray(value)) {
-    value.forEach((entry, fallbackIndex) => {
-      if (entry && typeof entry === "object") {
-        put(
-          entry.index ?? entry.flap ?? fallbackIndex,
-          entry.position ?? entry.pos ?? entry.step
-        );
-      } else {
-        put(fallbackIndex, entry);
-      }
-    });
-    return result;
-  }
-
-  if (typeof value === "object") {
-    for (const [index, position] of Object.entries(value)) {
-      put(index, position);
-    }
-  }
-  return result;
-}
-
-/**
- * Linearly interpolate offsets around the reel. The anchors are the freshly
- * measured flaps; every gap between neighbours is filled. Returns a map of
- * ``index -> interpolated offset`` for the flaps that were not anchored.
- */
-function interpolateCircularOffsets(anchors, flapCount) {
-  const result = new Map();
-  const count = Math.max(Number(flapCount) || 64, 1);
-  const indices = [...anchors.keys()]
-    .filter((index) => index >= 0 && index < count)
-    .sort((a, b) => a - b);
-
-  // With fewer than two anchors there is no direction to interpolate along.
-  if (indices.length < 2) return result;
-
-  for (let position = 0; position < indices.length; position += 1) {
-    const start = indices[position];
-    const end = indices[(position + 1) % indices.length];
-    const startValue = anchors.get(start);
-    const endValue = anchors.get(end);
-    const span = (end - start + count) % count;
-    if (span <= 1) continue;
-
-    for (let step = 1; step < span; step += 1) {
-      const index = (start + step) % count;
-      const ratio = step / span;
-      result.set(index, startValue + (endValue - startValue) * ratio);
-    }
-  }
-  return result;
-}
-
-/**
- * Turn expected/actual flap pairs into per-flap position-map entries.
- *
- * Position-map entries are absolute step targets in the module's current home
- * coordinate, not global corrections. The home offset is calibrated separately
- * with ``computeHomeOffsetPlan``; changing it moves the whole coordinate system
- * and therefore every absolute target. Mixing the two corrections in one step
- * is what made repeated calibration corrupt the map.
- *
- * For a sample, ``effectiveTarget`` is the target the firmware actually used
- * (the existing map entry, or the evenly spaced base position). If the reel
- * showed ``actual`` instead of ``expected``, the physical flap is
- * ``errorFlaps`` away from that target, so its corrected target is
- * ``effectiveTarget - errorSteps``.
- */
-function computePositionMapPlan(
-  samples,
-  totalSteps,
-  flapCount = 64,
-  currentMap = {},
-  fillGaps = false
-) {
-  const total = Number(totalSteps);
-  const count = Math.max(Number(flapCount) || 64, 1);
-  if (
-    !Array.isArray(samples) ||
-    samples.length === 0 ||
-    !Number.isFinite(total) ||
-    total <= 0
-  ) {
-    return null;
-  }
-
-  const basePosition = (index) => Math.floor((index * total) / count);
-  const stepPerFlap = total / count;
-  const existing = parsePositionMap(currentMap, total, count);
-  const effectiveTarget = (index) =>
-    existing[index] !== undefined ? existing[index] : basePosition(index);
-
-  const grouped = new Map();
-  for (const sample of samples) {
-    const expected = Number(sample.expected);
-    const actual = Number(sample.actual);
-    if (!Number.isInteger(expected) || !Number.isInteger(actual)) continue;
-    if (expected < 0 || expected >= count) continue;
-    if (actual < 0 || actual >= count) continue;
-
-    const errorSteps = flapDelta(expected, actual, count) * stepPerFlap;
-    if (!grouped.has(expected)) {
-      grouped.set(expected, {
-        expected,
-        target: effectiveTarget(expected),
-        hadMap: existing[expected] !== undefined,
-        errors: [],
-      });
-    }
-    grouped.get(expected).errors.push(errorSteps);
-  }
-  if (grouped.size === 0) return null;
-
-  // Repeated observations of one flap are aggregated with the median so a
-  // single mis-click cannot move that flap.
-  const measured = [...grouped.values()].map((entry) => {
-    const errorSteps = Math.round(median(entry.errors));
-    return {
-      expected: entry.expected,
-      target: entry.target,
-      hadMap: entry.hadMap,
-      errorSteps,
-      newTarget: normalizeStepPosition(entry.target - errorSteps, total),
-    };
-  });
-
-  const threshold = Math.max(1, Math.round(stepPerFlap / 2));
-  const sampledIndices = new Set(measured.map((entry) => entry.expected));
-  const mapPositions = {};
-  let sampledEntries = 0;
-  let interpolatedEntries = 0;
-
-  // Write every measured flap. A flap that already had an entry is always
-  // rewritten, even when the change is small, so a bad entry can be repaired.
-  for (const entry of measured) {
-    const deviation = signedStepDifference(
-      entry.newTarget,
-      basePosition(entry.expected),
-      total
-    );
-    if (!entry.hadMap && Math.abs(deviation) < threshold) continue;
-    mapPositions[String(entry.expected)] = entry.newTarget;
-    sampledEntries += 1;
-  }
-
-  // Optional: fill unsampled flaps from the measured deviations. This is off
-  // by default because a few noisy samples should not rewrite most of the drum.
-  if (fillGaps && measured.length >= 4) {
-    const anchors = new Map();
-    for (const entry of measured) {
-      anchors.set(
-        entry.expected,
-        signedStepDifference(
-          entry.newTarget,
-          basePosition(entry.expected),
-          total
-        )
-      );
-    }
-    const interpolated = interpolateCircularOffsets(anchors, count);
-    for (const [index, deviation] of interpolated.entries()) {
-      if (sampledIndices.has(index)) continue;
-      if (existing[index] !== undefined) continue;
-      if (Math.abs(deviation) < threshold) continue;
-      mapPositions[String(index)] = normalizeStepPosition(
-        basePosition(index) + deviation,
-        total
-      );
-      interpolatedEntries += 1;
-    }
-  }
-
-  const preservedEntries = Object.keys(existing).filter(
-    (index) => !sampledIndices.has(Number(index))
-  ).length;
-
-  return {
-    mapPositions,
-    stepPerFlap,
-    threshold,
-    measured,
-    sampledEntries,
-    interpolatedEntries,
-    preservedEntries,
-    entryCount: Object.keys(mapPositions).length,
-    maxResidualSteps: measured.reduce(
-      (max, entry) =>
-        Math.max(
-          max,
-          Math.abs(signedStepDifference(entry.newTarget, entry.target, total))
-        ),
-      0
-    ),
-  };
-}
-
-/**
- * Compute a home-offset correction from the flap the reel physically shows
- * after a Home command.
- *
- * Home is defined as flap index 0. If the reel shows ``actual`` instead, the
- * home position is ``actual`` flaps past flap 0, so the offset must be reduced
- * by that many steps. This is the only operation that should change the home
- * offset; per-flap errors belong in the position map.
- */
-function computeHomeOffsetPlan(
-  actualFlap,
-  totalSteps,
-  homeOffset,
-  flapCount = 64
-) {
-  const total = Number(totalSteps);
-  const offset = Number(homeOffset);
-  const count = Math.max(Number(flapCount) || 64, 1);
-  const actual = Number(actualFlap);
-  if (
-    actualFlap === null ||
-    actualFlap === undefined ||
-    !Number.isInteger(actual) ||
-    actual < 0 ||
-    actual >= count ||
-    !Number.isFinite(total) ||
-    total <= 0 ||
-    !Number.isFinite(offset)
-  ) {
-    return null;
-  }
-
-  const stepPerFlap = total / count;
-  const errorFlaps = flapDelta(0, actual, count);
-  const correction = Math.round(errorFlaps * stepPerFlap);
-  return {
-    actualFlap: actual,
-    errorFlaps,
-    correction,
-    stepPerFlap,
-    newHomeOffset: normalizeStepPosition(offset - correction, total),
-  };
-}
 class SplitFlapCard extends HTMLElement {
   constructor() {
     super();
@@ -1118,6 +835,10 @@ class SplitFlapCard extends HTMLElement {
     this._updateFlaps(currentText, modules, modulesCount, showOptimistic);
     this._updateOverflowHint(currentText, modules, modulesCount);
     this._updateModuleDetails(modules);
+
+    if (this._boardCalibration) {
+      this._renderBoardCalibration();
+    }
   }
 
   _updateStartBounds(modulesCount) {
@@ -1602,20 +1323,6 @@ class SplitFlapCard extends HTMLElement {
         .calibration-status.error {
           color: var(--error-color, #e74c3c);
         }
-        .calibration-check {
-          display: flex;
-          gap: 7px;
-          align-items: center;
-          color: var(--secondary-text-color, #8e8e93);
-          font-size: 0.74rem;
-          line-height: 1.3;
-          cursor: pointer;
-        }
-        .calibration-check input {
-          flex: 0 0 auto;
-          margin: 0;
-          accent-color: var(--primary-color, #03a9f4);
-        }
         .calibration-row,
         .calibration-actions {
           display: flex;
@@ -1663,38 +1370,6 @@ class SplitFlapCard extends HTMLElement {
           flex-wrap: wrap;
           gap: 4px;
           margin-top: 5px;
-        }
-        .calibration-samples {
-          display: flex;
-          flex-direction: column;
-          gap: 4px;
-          max-height: 180px;
-          overflow: auto;
-        }
-        .calibration-sample {
-          display: grid;
-          grid-template-columns: 1fr auto auto;
-          gap: 8px;
-          align-items: center;
-          padding: 5px 7px;
-          border-radius: 5px;
-          background: var(--secondary-background-color, #2b2b34);
-          font-size: 0.74rem;
-        }
-        .calibration-sample button {
-          width: 22px;
-          height: 22px;
-          padding: 0;
-          border: none;
-          border-radius: 50%;
-          background: transparent;
-          color: var(--secondary-text-color, #8e8e93);
-          cursor: pointer;
-          line-height: 1;
-        }
-        .calibration-sample button:hover {
-          background: var(--divider-color, #383842);
-          color: var(--primary-text-color, #fff);
         }
         .controls {
           display: flex;
@@ -1899,7 +1574,7 @@ class SplitFlapCard extends HTMLElement {
               id="moduleDetailsCalibrate"
               type="button"
             >
-              Advanced calibration
+              Calibration
             </button>
             <button
               class="btn btn-secondary"
@@ -2119,33 +1794,13 @@ class SplitFlapCard extends HTMLElement {
       return;
     }
 
-    if (this._calibration && this._calibration.samples.length > 0) {
-      const previous = this._calibration.moduleId;
-      const count = this._calibration.samples.length;
-      if (
-        !window.confirm(
-          `Discard ${count} sample${count === 1 ? "" : "s"} for module ${previous}?`
-        )
-      ) {
-        return;
-      }
-    }
-
     this._calibration = {
       moduleId,
-      samples: [],
-      expectedIndex: 0,
-      // Deliberately unset: the user must look at the reel and choose the flap
-      // it is physically showing. Defaulting this to the expected flap made
-      // every "perfect" sample hide a real misalignment.
-      actualIndex: null,
-      homeActualIndex: null,
-      clearMapOnHomeFix: true,
-      homeVerified: false,
-      fillGaps: false,
-      lastAppliedHomeOffset: null,
-      lastAppliedAt: 0,
-      message: "",
+      gotoIndex: 0,
+      recordIndex: 0,
+      nudgeSteps: 10,
+      message:
+        "Home the module, nudge until the flap is centred, then record the current position as that flap index.",
       messageError: false,
     };
     this._calibrationMessageNode = undefined;
@@ -2158,19 +1813,16 @@ class SplitFlapCard extends HTMLElement {
       this._closeBoardCalibration();
       return;
     }
-    const modules = this._boardModules();
-    const currentStep = {};
-    for (const m of modules) currentStep[m.id] = 0;
     this._boardCalibration = {
       active: true,
       mode: "home",
       referenceIndex: 0,
       sequence: [0],
       seqPos: 0,
-      currentStep,
-      message: "Start with Home (space) to fix home offset first. Nudge each module until green, then Next.",
+      recorded: {},
+      message:
+        "Home pass: nudge each module until flap 0 (space) is centred, then press Record all.",
       messageError: false,
-      applying: false,
     };
     this._boardCalibrationSetupSequence();
     this._boardCalibrationSendReference();
@@ -2218,8 +1870,7 @@ class SplitFlapCard extends HTMLElement {
     }
     bc.seqPos = 0;
     bc.referenceIndex = bc.sequence[0];
-    bc.currentStep = {};
-    for (const m of this._boardModules()) bc.currentStep[m.id] = Math.round(bc.referenceIndex * (Number(this._firstValue(this._boardModuleAttrs(m), MODULE_STAT_ALIASES.total_steps)) || 4096) / 64);
+    bc.recorded = {};
   }
 
   async _boardCalibrationSendReference() {
@@ -2312,8 +1963,7 @@ class SplitFlapCard extends HTMLElement {
           bc.sequence = [bc.singleRef];
           bc.seqPos = 0;
           bc.referenceIndex = bc.singleRef;
-          bc.currentStep = {};
-          for (const m of modules) bc.currentStep[m.id] = Math.round(bc.referenceIndex * (Number(this._firstValue(this._boardModuleAttrs(m), MODULE_STAT_ALIASES.total_steps)) || 4096) / 64);
+          bc.recorded = {};
           this._boardCalibrationSendReference();
           this._renderBoardCalibration();
         });
@@ -2323,6 +1973,11 @@ class SplitFlapCard extends HTMLElement {
 
       const progressLabel = document.createElement("span");
       progressLabel.textContent = `  Flap ${bc.referenceIndex} (${bc.seqPos + 1}/${bc.sequence.length})`;
+
+      const recordAllBtn = document.createElement("button");
+      recordAllBtn.className = "btn btn-primary";
+      recordAllBtn.textContent = "Record all";
+      recordAllBtn.addEventListener("click", () => this._boardRecordAll());
 
       const nextBtn = document.createElement("button");
       nextBtn.className = "btn btn-primary";
@@ -2336,35 +1991,50 @@ class SplitFlapCard extends HTMLElement {
       exitBtn.addEventListener("click", () => this._closeBoardCalibration());
 
       modeLabel.append(modeSelect);
-      topBar.append(modeLabel, singleRefWrap, progressLabel, nextBtn, exitBtn);
+      topBar.append(
+        modeLabel,
+        singleRefWrap,
+        progressLabel,
+        recordAllBtn,
+        nextBtn,
+        exitBtn
+      );
       body.append(topBar);
 
       // Hint
       const hint = document.createElement("div");
       hint.className = "calibration-hint";
-      hint.textContent = bc.message || "Nudge each module until green, then Next.";
+      hint.textContent =
+        bc.message ||
+        "Nudge each module until the reference flap is centred, then Record all.";
       body.append(hint);
 
       // Module tiles
       const grid = document.createElement("div");
       grid.className = "board-calibration-grid";
-      let aligned = 0;
+      let recorded = 0;
       let total = 0;
       for (const m of modules) {
         total += 1;
         const attrs = this._boardModuleAttrs(m);
-        const totalSteps = Number(this._firstValue(attrs, MODULE_STAT_ALIASES.total_steps)) || 4096;
-        const stepPerFlap = totalSteps / 64;
-        const basePos = Math.round(bc.referenceIndex * stepPerFlap);
-        const curStep = bc.currentStep[m.id] !== undefined ? bc.currentStep[m.id] : basePos;
-        const correction = curStep - basePos;
-        const nudge = Math.trunc(correction / stepPerFlap);
-        const nudgeSteps = correction - nudge * stepPerFlap;
-        if (correction === 0) aligned += 1;
+        const rawStep = this._firstValue(attrs, MODULE_STAT_ALIASES.current_step);
+        const parsedStep = Number(rawStep);
+        const currentStep = Number.isFinite(parsedStep) ? parsedStep : null;
+        const rawKnown = this._firstValue(
+          attrs,
+          MODULE_STAT_ALIASES.position_known
+        );
+        const positionKnown =
+          rawKnown === undefined || rawKnown === null ? null : Boolean(rawKnown);
+        const busy = Boolean(
+          this._firstValue(attrs, MODULE_STAT_ALIASES.busy)
+        );
+        const isRecorded = Boolean(bc.recorded[m.id]);
+        if (isRecorded) recorded += 1;
 
         const tile = document.createElement("div");
         tile.className = "board-calibration-tile";
-        tile.classList.add(correction === 0 ? "ok" : "off");
+        tile.classList.add(isRecorded ? "ok" : "off");
 
         const idSpan = document.createElement("span");
         idSpan.className = "bct-id";
@@ -2376,10 +2046,15 @@ class SplitFlapCard extends HTMLElement {
 
         const counter = document.createElement("span");
         counter.className = "bct-counter";
-        const parts = [];
-        if (nudge !== 0) parts.push(`${nudge > 0 ? "+" : ""}${nudge} flaps`);
-        if (nudgeSteps !== 0) parts.push(`${nudgeSteps > 0 ? "+" : ""}${nudgeSteps} steps`);
-        counter.textContent = parts.length ? parts.join(", ") : "aligned";
+        if (busy) {
+          counter.textContent = "moving…";
+        } else if (positionKnown === false) {
+          counter.textContent = "position unknown";
+        } else if (currentStep === null) {
+          counter.textContent = "no state yet";
+        } else {
+          counter.textContent = `pos ${currentStep}`;
+        }
 
         const flapControls = document.createElement("div");
         flapControls.className = "bct-controls";
@@ -2405,24 +2080,50 @@ class SplitFlapCard extends HTMLElement {
         stepLeft.textContent = "◀";
         const stepRight = document.createElement("button");
         stepRight.textContent = "▶";
-        stepLeft.addEventListener("click", () => this._boardNudge(m.id, 0, -Number(stepAmt.value)));
-        stepRight.addEventListener("click", () => this._boardNudge(m.id, 0, +Number(stepAmt.value)));
+        stepLeft.addEventListener("click", () =>
+          this._boardNudge(m.id, 0, -Number(stepAmt.value))
+        );
+        stepRight.addEventListener("click", () =>
+          this._boardNudge(m.id, 0, +Number(stepAmt.value))
+        );
 
-        const tryBtn = document.createElement("button");
-        tryBtn.className = "btn btn-secondary bct-try";
-        tryBtn.textContent = "Try";
-        tryBtn.addEventListener("click", () => this._boardTry(m.id));
+        const goBtn = document.createElement("button");
+        goBtn.className = "btn btn-secondary bct-try";
+        goBtn.textContent = "Go to flap";
+        goBtn.addEventListener("click", () => this._boardGoto(m.id));
+
+        const recordBtn = document.createElement("button");
+        recordBtn.className = "btn btn-secondary bct-try";
+        recordBtn.textContent = isRecorded ? "Recorded" : "Record";
+        recordBtn.disabled = busy || positionKnown === false;
+        recordBtn.addEventListener("click", () => this._boardRecord(m.id));
+
+        // Absolute targets are computed from the last reported pos, so do not
+        // accept a second nudge until the module has stopped and re-reported.
+        flapLeft.disabled = busy;
+        flapRight.disabled = busy;
+        stepLeft.disabled = busy;
+        stepRight.disabled = busy;
+        goBtn.disabled = busy;
 
         stepControls.append(stepLeft, stepAmt, stepRight);
         flapControls.append(flapLeft, flapRight);
-        tile.append(idSpan, refChar, counter, flapControls, stepControls, tryBtn);
+        tile.append(
+          idSpan,
+          refChar,
+          counter,
+          flapControls,
+          stepControls,
+          goBtn,
+          recordBtn
+        );
         grid.append(tile);
       }
       body.append(grid);
 
       const progress = document.createElement("div");
       progress.className = "board-calibration-progress";
-      progress.textContent = `${aligned} / ${total} modules aligned`;
+      progress.textContent = `${recorded} / ${total} modules recorded for flap ${bc.referenceIndex}`;
       body.append(progress);
     } catch (err) {
       console.error("[splitflap-card] Board calibration render failed:", err);
@@ -2432,98 +2133,171 @@ class SplitFlapCard extends HTMLElement {
     }
   }
 
-  _boardNudge(moduleId, flapDelta, stepDelta) {
-    if (!this._boardCalibration) return;
-    const bc = this._boardCalibration;
-    const modules = this._boardModules();
-    const m = modules.find((x) => String(x.id) === String(moduleId));
-    if (!m) return;
-    const attrs = this._boardModuleAttrs(m);
-    const totalSteps = Number(this._firstValue(attrs, MODULE_STAT_ALIASES.total_steps)) || 4096;
-    const stepPerFlap = totalSteps / 64;
-
-    const cur = bc.currentStep[moduleId] !== undefined ? bc.currentStep[moduleId] : Math.round(bc.referenceIndex * stepPerFlap);
-    const delta = Math.round(flapDelta * stepPerFlap + stepDelta);
-    bc.currentStep[moduleId] = cur + delta;
-    this._renderBoardCalibration();
-  }
-
-  async _boardTry(moduleId) {
+  async _boardNudge(moduleId, flapSteps, stepDelta) {
     if (!this._boardCalibration || !this._hass) return;
     const bc = this._boardCalibration;
     const modules = this._boardModules();
     const m = modules.find((x) => String(x.id) === String(moduleId));
     if (!m) return;
-    const attrs = this._boardModuleAttrs(m);
-    const totalSteps = Number(this._firstValue(attrs, MODULE_STAT_ALIASES.total_steps)) || 4096;
 
-    const cur = bc.currentStep[moduleId] !== undefined ? bc.currentStep[moduleId] : 0;
-    const finalTarget = ((cur % totalSteps) + totalSteps) % totalSteps;
+    const attrs = this._boardModuleAttrs(m);
+    const rawKnown = this._firstValue(
+      attrs,
+      MODULE_STAT_ALIASES.position_known
+    );
+    if (rawKnown !== undefined && rawKnown !== null && !Boolean(rawKnown)) {
+      bc.message = `Module ${moduleId} does not know its position. Press Go to flap or Home first.`;
+      bc.messageError = true;
+      this._renderBoardCalibration();
+      return;
+    }
+
+    const currentStep = Number(
+      this._firstValue(attrs, MODULE_STAT_ALIASES.current_step)
+    );
+    if (!Number.isFinite(currentStep)) {
+      bc.message = `Module ${moduleId} has not reported a position yet.`;
+      bc.messageError = true;
+      this._renderBoardCalibration();
+      return;
+    }
+
+    const totalSteps =
+      Number(this._firstValue(attrs, MODULE_STAT_ALIASES.total_steps)) || 4096;
+    const stepPerFlap = totalSteps / 64;
+    const delta = Math.round(flapSteps * stepPerFlap + stepDelta);
+    const target = normalizeStepPosition(currentStep + delta, totalSteps);
+
+    bc.message = `Moving module ${moduleId} to pos ${target}...`;
+    bc.messageError = false;
+    this._renderBoardCalibration();
 
     try {
       await this._hass.callService("splitflap", "calibrate", {
         action: "step",
         module_id: Number(moduleId),
-        steps: finalTarget,
+        steps: target,
       });
     } catch (err) {
-      console.error("[splitflap-card] board try failed:", err);
+      console.error("[splitflap-card] board nudge failed:", err);
+      bc.message = `Could not move module ${moduleId}.`;
+      bc.messageError = true;
+      this._renderBoardCalibration();
     }
+  }
+
+  async _boardGoto(moduleId) {
+    if (!this._boardCalibration || !this._hass) return;
+    const bc = this._boardCalibration;
+    bc.message = `Sending module ${moduleId} to flap ${bc.referenceIndex}...`;
+    bc.messageError = false;
+    this._renderBoardCalibration();
+    try {
+      await this._hass.callService("splitflap", "calibrate", {
+        action: "goto",
+        module_id: Number(moduleId),
+        index: bc.referenceIndex,
+      });
+    } catch (err) {
+      console.error("[splitflap-card] board goto failed:", err);
+      bc.message = `Could not move module ${moduleId} to flap ${bc.referenceIndex}.`;
+      bc.messageError = true;
+      this._renderBoardCalibration();
+    }
+  }
+
+  async _boardRecord(moduleId) {
+    if (!this._boardCalibration || !this._hass) return;
+    const bc = this._boardCalibration;
+    try {
+      await this._hass.callService("splitflap", "calibrate", {
+        action: "record",
+        module_id: Number(moduleId),
+        index: bc.referenceIndex,
+      });
+      bc.recorded[moduleId] = true;
+      bc.message =
+        bc.referenceIndex === 0
+          ? `Recorded module ${moduleId}: current pos stored as flap 0 and as the home offset.`
+          : `Recorded module ${moduleId}: current pos stored as flap ${bc.referenceIndex}.`;
+      bc.messageError = false;
+      this._renderBoardCalibration();
+    } catch (err) {
+      console.error("[splitflap-card] board record failed:", err);
+      bc.message = `Could not record module ${moduleId}.`;
+      bc.messageError = true;
+      this._renderBoardCalibration();
+    }
+  }
+
+  async _boardRecordAll() {
+    if (!this._boardCalibration || !this._hass) return;
+    const bc = this._boardCalibration;
+    const modules = this._boardModules();
+    let recorded = 0;
+    let skipped = 0;
+
+    bc.message = `Recording flap ${bc.referenceIndex} on every module...`;
+    bc.messageError = false;
+    this._renderBoardCalibration();
+
+    for (const m of modules) {
+      const attrs = this._boardModuleAttrs(m);
+      const rawKnown = this._firstValue(
+        attrs,
+        MODULE_STAT_ALIASES.position_known
+      );
+      const busy = Boolean(
+        this._firstValue(attrs, MODULE_STAT_ALIASES.busy)
+      );
+      if (busy || (rawKnown !== undefined && rawKnown !== null && !Boolean(rawKnown))) {
+        skipped += 1;
+        continue;
+      }
+
+      try {
+        await this._hass.callService("splitflap", "calibrate", {
+          action: "record",
+          module_id: Number(m.id),
+          index: bc.referenceIndex,
+        });
+        bc.recorded[m.id] = true;
+        recorded += 1;
+      } catch (err) {
+        console.error("[splitflap-card] board record-all failed:", m.id, err);
+        skipped += 1;
+      }
+    }
+
+    bc.message =
+      `Recorded ${recorded} module(s) for flap ${bc.referenceIndex}` +
+      (skipped ? `, skipped ${skipped} (busy or unknown position)` : "") +
+      (bc.referenceIndex === 0
+        ? ". Flap 0 record also updates each home offset."
+        : ".");
+    bc.messageError = skipped > 0;
     this._renderBoardCalibration();
   }
 
   async _boardCalibrationNext() {
     if (!this._boardCalibration || !this._hass) return;
     const bc = this._boardCalibration;
-    const modules = this._boardModules();
-    const refIndex = bc.referenceIndex;
-    const isHomePass = refIndex === 0;
 
-    // Auto-apply corrections for current reference flap
-    for (const m of modules) {
-      const attrs = this._boardModuleAttrs(m);
-      const totalSteps = Number(this._firstValue(attrs, MODULE_STAT_ALIASES.total_steps)) || 4096;
-      const homeOffset = Number(this._firstValue(attrs, MODULE_STAT_ALIASES.home_offset)) || 0;
-      const stepPerFlap = totalSteps / 64;
-      const basePos = Math.round(refIndex * stepPerFlap);
-      const curStep = bc.currentStep[m.id] !== undefined ? bc.currentStep[m.id] : basePos;
-      const correction = curStep - basePos;
-      if (correction === 0) continue;
-
-      try {
-        if (isHomePass) {
-          const newOffset = ((homeOffset + correction) % totalSteps + totalSteps) % totalSteps;
-          await this._hass.callService("splitflap", "calibrate", {
-            action: "apply",
-            module_id: Number(m.id),
-            home_offset: newOffset,
-            clear_map: true,
-          });
-        } else {
-          const newTarget = ((basePos + correction) % totalSteps + totalSteps) % totalSteps;
-          await this._hass.callService("splitflap", "calibrate", {
-            action: "apply",
-            module_id: Number(m.id),
-            positions: { [String(refIndex)]: newTarget },
-          });
-        }
-      } catch (err) {
-        console.error("[splitflap-card] auto-apply failed for module", m.id, err);
-      }
-    }
-
-    // Advance to next reference
     bc.seqPos += 1;
     if (bc.seqPos >= bc.sequence.length) {
       bc.message = "All done! Re-send display text to restore the board.";
+      bc.messageError = false;
       bc.seqPos = bc.sequence.length - 1;
-    } else {
-      bc.referenceIndex = bc.sequence[bc.seqPos];
-      bc.currentStep = {};
-      for (const m of modules) bc.currentStep[m.id] = Math.round(bc.referenceIndex * (Number(this._firstValue(this._boardModuleAttrs(m), MODULE_STAT_ALIASES.total_steps)) || 4096) / 64);
-      bc.message = `Moved to flap ${bc.referenceIndex}. Nudge until green, then Next.`;
-      await this._boardCalibrationSendReference();
+      this._renderBoardCalibration();
+      return;
     }
+
+    bc.referenceIndex = bc.sequence[bc.seqPos];
+    bc.recorded = {};
+    bc.message =
+      `Nudge every module until flap ${bc.referenceIndex} is centred, then Record all.`;
+    bc.messageError = false;
+    await this._boardCalibrationSendReference();
     this._renderBoardCalibration();
   }
 
@@ -2547,11 +2321,6 @@ class SplitFlapCard extends HTMLElement {
   async _runCalibrationGoto(index) {
     if (!this._calibration) return;
     const moduleId = Number(this._calibration.moduleId);
-    // Force a fresh observation for every sent flap. Never pre-select the
-    // expected flap as the actual one.
-    this._calibration.actualIndex = null;
-    this._detailsSignature = "";
-    this.render();
     this._setCalibrationMessage(`Moving to flap #${index}...`);
 
     try {
@@ -2561,9 +2330,7 @@ class SplitFlapCard extends HTMLElement {
         index,
       });
       this._setCalibrationMessage(
-        index === 0
-          ? "Home position requested. The reel may already be there; look at it and select the flap it is physically showing."
-          : `Moved to flap #${index}. Wait for the reel to stop, then select the flap it is physically showing and press Record pair.`
+        `Move to flap #${index} requested. Wait for the reel to stop, then nudge until centred and record the current position.`
       );
     } catch (err) {
       console.error("[splitflap-card] Calibration goto failed:", err);
@@ -2574,15 +2341,12 @@ class SplitFlapCard extends HTMLElement {
   async _runCalibrationHome() {
     if (!this._calibration) return;
     const moduleId = Number(this._calibration.moduleId);
-    this._calibration.homeActualIndex = null;
-    this._detailsSignature = "";
-    this.render();
     this._setCalibrationMessage("Homing module...");
 
     try {
       await this._callCalibrationService({ action: "home", module_id: moduleId });
       this._setCalibrationMessage(
-        "Home command sent. Wait for the reel to stop, then select the flap it is physically showing under Home landed on."
+        "Home requested. Wait for the reel to stop, nudge until flap #0 (space) is centred, then record index 0."
       );
     } catch (err) {
       console.error("[splitflap-card] Calibration home failed:", err);
@@ -2590,46 +2354,75 @@ class SplitFlapCard extends HTMLElement {
     }
   }
 
-  async _runHomeOffsetFix(plan) {
-    if (!this._calibration || !plan) return;
-    const calibration = this._calibration;
-    const payload = {
-      action: "apply",
-      module_id: Number(calibration.moduleId),
-      home_offset: plan.newHomeOffset,
-    };
-    if (calibration.clearMapOnHomeFix) {
-      payload.clear_map = true;
-    }
-
-    this._setCalibrationMessage(
-      calibration.clearMapOnHomeFix
-        ? "Applying home offset and clearing the position map. The module is re-homing..."
-        : "Applying home offset and shifting the position map. The module is re-homing..."
-    );
-
+  async _recordCalibrationIndex(index) {
+    if (!this._calibration) return;
+    const moduleId = Number(this._calibration.moduleId);
+    this._setCalibrationMessage(`Recording current position as flap #${index}...`);
     try {
-      await this._callCalibrationService(payload);
-      calibration.lastAppliedHomeOffset = plan.newHomeOffset;
-      calibration.lastAppliedAt = Date.now();
-      // Any samples were taken in the old home coordinate. If the map was
-      // cleared they are meaningless; if it was shifted they are still in the
-      // old coordinate. Start the map pass fresh in either case.
-      calibration.samples = [];
-      calibration.homeActualIndex = null;
-      calibration.homeVerified = false;
-      calibration.message =
-        `Home offset ${plan.newHomeOffset} sent. Wait for the reel to finish re-homing, then press Home module and confirm that flap #0 (space) is showing.`;
-      calibration.messageError = false;
-      this._calibrationMessageNode = undefined;
-      this._detailsSignature = "";
-      this.render();
-    } catch (err) {
-      console.error("[splitflap-card] Home offset apply failed:", err);
+      await this._callCalibrationService({
+        action: "record",
+        module_id: moduleId,
+        index,
+      });
       this._setCalibrationMessage(
-        "Could not apply the home offset. Check the Home Assistant log.",
+        index === 0
+          ? "Recorded the current position as flap #0 and as the home offset."
+          : `Recorded the current position as flap #${index}.`
+      );
+    } catch (err) {
+      console.error("[splitflap-card] Calibration record failed:", err);
+      this._setCalibrationMessage(
+        "Could not record the position. Wait until the module stops and its position is known.",
         true
       );
+    }
+  }
+
+  async _nudgeCalibration(stepDelta) {
+    if (!this._calibration || !this._hass) return;
+    const moduleId = String(this._calibration.moduleId);
+    const module = this._boardModules().find(
+      (candidate) => String(candidate.id) === moduleId
+    );
+    if (!module) return;
+
+    const attrs = this._boardModuleAttrs(module);
+    const rawKnown = this._firstValue(
+      attrs,
+      MODULE_STAT_ALIASES.position_known
+    );
+    if (rawKnown !== undefined && rawKnown !== null && !Boolean(rawKnown)) {
+      this._setCalibrationMessage(
+        "The module does not know its position. Home it first.",
+        true
+      );
+      return;
+    }
+
+    const currentStep = Number(
+      this._firstValue(attrs, MODULE_STAT_ALIASES.current_step)
+    );
+    if (!Number.isFinite(currentStep)) {
+      this._setCalibrationMessage(
+        "The module has not reported a position yet.",
+        true
+      );
+      return;
+    }
+
+    const totalSteps =
+      Number(this._firstValue(attrs, MODULE_STAT_ALIASES.total_steps)) || 4096;
+    const target = normalizeStepPosition(currentStep + stepDelta, totalSteps);
+    this._setCalibrationMessage(`Nudging to pos ${target}...`);
+    try {
+      await this._callCalibrationService({
+        action: "step",
+        module_id: Number(moduleId),
+        steps: target,
+      });
+    } catch (err) {
+      console.error("[splitflap-card] Calibration nudge failed:", err);
+      this._setCalibrationMessage("Could not nudge the module.", true);
     }
   }
 
@@ -2696,37 +2489,25 @@ class SplitFlapCard extends HTMLElement {
         : Array.isArray(flapList)
           ? flapList
           : [];
+
     const totalSteps = Number(
       this._firstValue(attrs, MODULE_STAT_ALIASES.total_steps)
     );
     const homeOffset = Number(
       this._firstValue(attrs, MODULE_STAT_ALIASES.home_offset)
     );
-    const dataReady =
-      Number.isFinite(totalSteps) &&
-      totalSteps > 0 &&
-      Number.isFinite(homeOffset);
-    const currentMap = this._firstValue(
+    const rawStep = this._firstValue(attrs, MODULE_STAT_ALIASES.current_step);
+    const parsedStep = Number(rawStep);
+    const currentStep = Number.isFinite(parsedStep) ? parsedStep : null;
+    const rawKnown = this._firstValue(
       attrs,
-      MODULE_STAT_ALIASES.map_of_positions
+      MODULE_STAT_ALIASES.position_known
     );
-
-    const homePlan = dataReady
-      ? computeHomeOffsetPlan(
-          calibration.homeActualIndex,
-          totalSteps,
-          homeOffset
-        )
-      : null;
-    const mapPlan = dataReady
-      ? computePositionMapPlan(
-          calibration.samples,
-          totalSteps,
-          64,
-          currentMap,
-          calibration.fillGaps
-        )
-      : null;
+    const positionKnown =
+      rawKnown === undefined || rawKnown === null ? null : Boolean(rawKnown);
+    const busy = Boolean(this._firstValue(attrs, MODULE_STAT_ALIASES.busy));
+    const dataReady = Number.isFinite(totalSteps) && totalSteps > 0;
+    const stepPerFlap = dataReady ? totalSteps / 64 : 64;
 
     const wrapper = document.createElement("div");
     wrapper.className = "calibration";
@@ -2744,371 +2525,154 @@ class SplitFlapCard extends HTMLElement {
     this._calibrationMessageNode = status;
     wrapper.append(status);
 
-    if (!dataReady) {
-      const warning = document.createElement("div");
-      warning.className = "calibration-status error";
-      warning.textContent =
-        "This module did not report its home offset and total steps. Update the master firmware and press Update Current before applying calibration.";
-      wrapper.append(warning);
+    // Live state straight from the slave. No coordinate math here: pos is
+    // measured from the hall edge and is exactly what `record` stores.
+    const stateBox = document.createElement("div");
+    stateBox.className = "calibration-summary";
+    const stateParts = [
+      `pos ${currentStep === null ? "—" : currentStep}`,
+      `steps/rev ${dataReady ? totalSteps : "—"}`,
+      `home offset ${Number.isFinite(homeOffset) ? homeOffset : "—"}`,
+      busy ? "moving" : "idle",
+    ];
+    if (positionKnown === false) stateParts.push("position unknown");
+    if (positionKnown === null) stateParts.push("waiting for state");
+    stateBox.textContent = stateParts.join(" · ");
+    wrapper.append(stateBox);
+
+    const hint = document.createElement("div");
+    hint.className = "calibration-hint";
+    hint.textContent =
+      "Nudge the module until the target flap is centred, then record the current position. Recording index 0 also sets the home offset; existing map entries are never moved.";
+    wrapper.append(hint);
+
+    // Move to an expected flap.
+    const gotoRow = document.createElement("div");
+    gotoRow.className = "calibration-row";
+    const gotoSelect = this._createCalibrationSelect(
+      "Move to flap",
+      flapChars,
+      calibration.gotoIndex ?? 0,
+      (value) => {
+        calibration.gotoIndex = value ?? 0;
+      }
+    );
+    const gotoButton = document.createElement("button");
+    gotoButton.type = "button";
+    gotoButton.className = "btn btn-secondary";
+    gotoButton.textContent = "Go to flap";
+    gotoButton.addEventListener("click", () =>
+      this._runCalibrationGoto(Number(calibration.gotoIndex ?? 0))
+    );
+    gotoRow.append(gotoSelect, gotoButton);
+    wrapper.append(gotoRow);
+
+    // Nudge by whole flaps and by raw steps.
+    const flapRow = document.createElement("div");
+    flapRow.className = "calibration-row";
+    const flapLeft = document.createElement("button");
+    flapLeft.type = "button";
+    flapLeft.className = "btn btn-secondary";
+    flapLeft.textContent = "◀ 1 flap";
+    flapLeft.addEventListener("click", () =>
+      this._nudgeCalibration(-Math.round(stepPerFlap))
+    );
+    const flapRight = document.createElement("button");
+    flapRight.type = "button";
+    flapRight.className = "btn btn-secondary";
+    flapRight.textContent = "1 flap ▶";
+    flapRight.addEventListener("click", () =>
+      this._nudgeCalibration(Math.round(stepPerFlap))
+    );
+
+    const stepAmount = document.createElement("select");
+    stepAmount.className = "calibration-select";
+    for (const amount of [1, 10, 50]) {
+      const option = document.createElement("option");
+      option.value = String(amount);
+      option.textContent = `${amount} steps`;
+      stepAmount.append(option);
     }
+    stepAmount.value = String(calibration.nudgeSteps || 10);
+    stepAmount.addEventListener("change", () => {
+      calibration.nudgeSteps = Number(stepAmount.value) || 10;
+    });
 
-    // ---------------------------------------------------------------------
-    // Step 1: global home alignment. This is deliberately separate from the
-    // position map because a home change moves the whole step coordinate.
-    // ---------------------------------------------------------------------
-    const homeHeading = document.createElement("div");
-    homeHeading.className = "calibration-heading";
-    homeHeading.textContent = "Step 1 · Align Home";
+    const stepLeft = document.createElement("button");
+    stepLeft.type = "button";
+    stepLeft.className = "btn btn-secondary";
+    stepLeft.textContent = "◀";
+    stepLeft.addEventListener("click", () =>
+      this._nudgeCalibration(-(Number(stepAmount.value) || 10))
+    );
+    const stepRight = document.createElement("button");
+    stepRight.type = "button";
+    stepRight.className = "btn btn-secondary";
+    stepRight.textContent = "▶";
+    stepRight.addEventListener("click", () =>
+      this._nudgeCalibration(Number(stepAmount.value) || 10)
+    );
 
-    const homeHint = document.createElement("div");
-    homeHint.className = "calibration-hint";
-    homeHint.textContent =
-      "Home is flap #0 (space). Press Home module, then choose the flap the reel is physically showing. Only the home offset changes here; do this before mapping individual flaps.";
+    flapRow.append(flapLeft, flapRight, stepAmount, stepLeft, stepRight);
+    wrapper.append(flapRow);
 
-    const homeRow = document.createElement("div");
-    homeRow.className = "calibration-row";
+    // Record the live position as a flap index.
+    const recordRow = document.createElement("div");
+    recordRow.className = "calibration-row";
+    const recordSelect = this._createCalibrationSelect(
+      "Record current position as",
+      flapChars,
+      calibration.recordIndex ?? 0,
+      (value) => {
+        calibration.recordIndex = value ?? 0;
+      }
+    );
+    const recordButton = document.createElement("button");
+    recordButton.type = "button";
+    recordButton.className = "btn btn-primary";
+    recordButton.textContent = "Record";
+    recordButton.disabled =
+      busy || positionKnown === false || currentStep === null;
+    recordButton.addEventListener("click", () =>
+      this._recordCalibrationIndex(Number(calibration.recordIndex ?? 0))
+    );
+    recordRow.append(recordSelect, recordButton);
+    wrapper.append(recordRow);
+
+    // Current map contents, read-only.
+    const positionMap = this._firstValue(
+      attrs,
+      MODULE_STAT_ALIASES.map_of_positions
+    );
+    const mapBox = document.createElement("div");
+    mapBox.className = "calibration-summary";
+    const entries = this._calibrationMapEntries(positionMap);
+    if (entries.length > 0) {
+      const mapLabel = document.createElement("div");
+      mapLabel.textContent = `Position map (${entries.length} entries)`;
+      const map = document.createElement("div");
+      map.className = "calibration-map";
+      for (const [index, position] of entries) {
+        const chip = document.createElement("span");
+        chip.className = "detail-map-entry";
+        chip.textContent = `#${index}: ${position}`;
+        map.append(chip);
+      }
+      mapBox.append(mapLabel, map);
+    } else {
+      mapBox.textContent =
+        "Position map is empty; flaps fall back to home offset + evenly spaced steps.";
+    }
+    wrapper.append(mapBox);
+
+    const actions = document.createElement("div");
+    actions.className = "calibration-actions";
 
     const homeButton = document.createElement("button");
     homeButton.type = "button";
     homeButton.className = "btn btn-secondary";
     homeButton.textContent = "Home module";
     homeButton.addEventListener("click", () => this._runCalibrationHome());
-
-    const homeSelect = this._createCalibrationSelect(
-      "Home landed on",
-      flapChars,
-      calibration.homeActualIndex,
-      (value) => {
-        calibration.homeActualIndex = value;
-        this._detailsSignature = "";
-        this.render();
-      },
-      true
-    );
-
-    homeRow.append(homeButton, homeSelect);
-
-    const clearRow = document.createElement("label");
-    clearRow.className = "calibration-check";
-    const clearInput = document.createElement("input");
-    clearInput.type = "checkbox";
-    clearInput.checked = calibration.clearMapOnHomeFix;
-    clearInput.addEventListener("change", () => {
-      calibration.clearMapOnHomeFix = clearInput.checked;
-      this._detailsSignature = "";
-      this.render();
-    });
-    const clearText = document.createElement("span");
-    clearText.textContent =
-      "Clear the position map when fixing Home (recommended after failed calibrations; start the map over afterwards)";
-    clearRow.append(clearInput, clearText);
-
-    const homeSummary = document.createElement("div");
-    homeSummary.className = "calibration-summary";
-
-    if (!dataReady) {
-      homeSummary.textContent =
-        "Home alignment is disabled until the module reports its configuration.";
-    } else if (!homePlan) {
-      homeSummary.textContent =
-        "Press Home module, wait for the reel to stop, then select the flap it is physically showing.";
-    } else {
-      const adjustment = -homePlan.correction;
-      const offsetLine = document.createElement("div");
-      offsetLine.textContent =
-        `Home offset: ${homeOffset} → ${homePlan.newHomeOffset} ` +
-        `(${adjustment > 0 ? "+" : ""}${adjustment} steps, ` +
-        `${-homePlan.errorFlaps > 0 ? "+" : ""}${-homePlan.errorFlaps} flaps).`;
-      homeSummary.append(offsetLine);
-
-      const mapLine = document.createElement("div");
-      mapLine.textContent = calibration.clearMapOnHomeFix
-        ? "Position map: will be cleared so stale entries cannot fight the new Home reference."
-        : "Position map: existing entries will be shifted by the same offset change so they keep pointing at the same flaps.";
-      homeSummary.append(mapLine);
-
-      if (homePlan.errorFlaps === 0) {
-        const alignedLine = document.createElement("div");
-        alignedLine.textContent =
-          "Home already reports flap #0. Apply only if you want to clear or shift the map.";
-        homeSummary.append(alignedLine);
-      }
-
-      const applyHomeButton = document.createElement("button");
-      applyHomeButton.type = "button";
-      applyHomeButton.className = "btn btn-primary";
-      applyHomeButton.textContent =
-        calibration.clearMapOnHomeFix
-          ? "Apply Home offset + clear map"
-          : "Apply Home offset";
-      applyHomeButton.addEventListener("click", () =>
-        this._runHomeOffsetFix(homePlan)
-      );
-      homeSummary.append(applyHomeButton);
-    }
-
-    if (calibration.lastAppliedHomeOffset !== null) {
-      const confirmLine = document.createElement("div");
-      const confirmed =
-        dataReady && homeOffset === calibration.lastAppliedHomeOffset;
-      confirmLine.className = confirmed
-        ? "calibration-status"
-        : "calibration-status error";
-      confirmLine.textContent = confirmed
-        ? `Firmware confirms home offset ${calibration.lastAppliedHomeOffset}.`
-        : `Applied home offset ${calibration.lastAppliedHomeOffset}, but the module currently reports ${homeOffset}. Wait for the re-home refresh; if it never changes, the master firmware may not support calibration.`;
-      homeSummary.append(confirmLine);
-    }
-
-    wrapper.append(homeHeading, homeHint, homeRow, clearRow, homeSummary);
-
-    // ---------------------------------------------------------------------
-    // Step 2: per-flap position map. This never changes the home offset.
-    // ---------------------------------------------------------------------
-    const mapHeading = document.createElement("div");
-    mapHeading.className = "calibration-heading";
-    mapHeading.textContent = "Step 2 · Map individual flaps (optional)";
-
-    const mapHint = document.createElement("div");
-    mapHint.className = "calibration-hint";
-    mapHint.textContent =
-      "Only do this after Home shows space. Send a flap, look at the reel, select the flap it is physically showing, then Record pair. Sample at least four flaps spread around the drum. Applying this step only writes position-map targets.";
-
-    const verifiedRow = document.createElement("label");
-    verifiedRow.className = "calibration-check";
-    const verifiedInput = document.createElement("input");
-    verifiedInput.type = "checkbox";
-    verifiedInput.checked = calibration.homeVerified;
-    verifiedInput.addEventListener("change", () => {
-      calibration.homeVerified = verifiedInput.checked;
-      this._detailsSignature = "";
-      this.render();
-    });
-    const verifiedText = document.createElement("span");
-    verifiedText.textContent =
-      "I verified that Home shows flap #0 (space) — required before writing map entries";
-    verifiedRow.append(verifiedInput, verifiedText);
-
-    const expectedRow = document.createElement("div");
-    expectedRow.className = "calibration-row";
-    const expectedSelect = this._createCalibrationSelect(
-      "Expected flap",
-      flapChars,
-      calibration.expectedIndex,
-      (value) => {
-        calibration.expectedIndex = value;
-      }
-    );
-
-    const sendButton = document.createElement("button");
-    sendButton.type = "button";
-    sendButton.className = "btn btn-secondary";
-    sendButton.textContent = "Send expected";
-    sendButton.addEventListener("click", () =>
-      this._runCalibrationGoto(calibration.expectedIndex)
-    );
-
-    expectedRow.append(expectedSelect, sendButton);
-
-    const actualRow = document.createElement("div");
-    actualRow.className = "calibration-row";
-    const actualSelect = this._createCalibrationSelect(
-      "Flap the reel is showing",
-      flapChars,
-      calibration.actualIndex,
-      (value) => {
-        calibration.actualIndex = value;
-        this._detailsSignature = "";
-        this.render();
-      },
-      true
-    );
-
-    const recordButton = document.createElement("button");
-    recordButton.type = "button";
-    recordButton.className = "btn btn-secondary";
-    recordButton.textContent = "Record pair";
-    recordButton.disabled = calibration.actualIndex === null;
-    recordButton.addEventListener("click", () => {
-      if (calibration.actualIndex === null) return;
-      calibration.samples.push({
-        expected: calibration.expectedIndex,
-        actual: calibration.actualIndex,
-      });
-      calibration.message = `Recorded ${this._flapLabel(
-        flapChars,
-        calibration.expectedIndex
-      )} → ${this._flapLabel(flapChars, calibration.actualIndex)}.`;
-      calibration.messageError = false;
-      // Require a fresh observation for the next sample.
-      calibration.actualIndex = null;
-      this._detailsSignature = "";
-      this.render();
-    });
-
-    actualRow.append(actualSelect, recordButton);
-
-    const fillRow = document.createElement("label");
-    fillRow.className = "calibration-check";
-    const fillInput = document.createElement("input");
-    fillInput.type = "checkbox";
-    fillInput.checked = calibration.fillGaps;
-    fillInput.addEventListener("change", () => {
-      calibration.fillGaps = fillInput.checked;
-      this._detailsSignature = "";
-      this.render();
-    });
-    const fillText = document.createElement("span");
-    fillText.textContent =
-      "Interpolate unsampled flaps from the measurements (advanced, needs 4+ samples)";
-    fillRow.append(fillInput, fillText);
-
-    wrapper.append(mapHeading, mapHint, verifiedRow, expectedRow, actualRow);
-
-    if (calibration.samples.length > 0) {
-      const list = document.createElement("div");
-      list.className = "calibration-samples";
-
-      calibration.samples.forEach((sample, index) => {
-        const delta = flapDelta(sample.expected, sample.actual, 64);
-        const row = document.createElement("div");
-        row.className = "calibration-sample";
-
-        const text = document.createElement("span");
-        text.textContent = `${this._flapLabel(
-          flapChars,
-          sample.expected
-        )} → ${this._flapLabel(flapChars, sample.actual)} (Δ ${
-          delta > 0 ? "+" : ""
-        }${delta})`;
-
-        const deltaLabel = document.createElement("span");
-        deltaLabel.textContent = `${delta * (totalSteps / 64)} steps`;
-
-        const remove = document.createElement("button");
-        remove.type = "button";
-        remove.title = "Remove sample";
-        remove.setAttribute("aria-label", "Remove sample");
-        remove.textContent = "×";
-        remove.addEventListener("click", () => {
-          calibration.samples.splice(index, 1);
-          calibration.message = "";
-          this._detailsSignature = "";
-          this.render();
-        });
-
-        row.append(text, deltaLabel, remove);
-        list.append(row);
-      });
-
-      wrapper.append(list);
-    }
-
-    wrapper.append(fillRow);
-
-    const summary = document.createElement("div");
-    summary.className = "calibration-summary";
-    if (!dataReady) {
-      summary.textContent =
-        "Position-map apply is disabled until the module reports its configuration.";
-    } else if (!mapPlan) {
-      summary.textContent =
-        "Record at least one expected/actual pair to calculate map entries.";
-    } else {
-      const detailLine = document.createElement("div");
-      const parts = [];
-      if (mapPlan.sampledEntries > 0) {
-        parts.push(`${mapPlan.sampledEntries} measured`);
-      }
-      if (mapPlan.interpolatedEntries > 0) {
-        parts.push(`${mapPlan.interpolatedEntries} interpolated`);
-      }
-      if (mapPlan.preservedEntries > 0) {
-        parts.push(`${mapPlan.preservedEntries} existing kept`);
-      }
-      detailLine.textContent =
-        parts.length > 0
-          ? `Position map: ${parts.join(", ")}.`
-          : "No map changes needed; the sampled flaps already match their targets.";
-      summary.append(detailLine);
-
-      const entries = Object.entries(mapPlan.mapPositions);
-      if (entries.length > 0) {
-        const map = document.createElement("div");
-        map.className = "calibration-map";
-        const shown = entries.slice(0, 32);
-        for (const [index, position] of shown) {
-          const chip = document.createElement("span");
-          chip.className = "detail-map-entry";
-          chip.textContent = `#${index}: ${position}`;
-          map.append(chip);
-        }
-        if (entries.length > shown.length) {
-          const more = document.createElement("span");
-          more.className = "detail-map-entry";
-          more.textContent = `+${entries.length - shown.length} more`;
-          map.append(more);
-        }
-        summary.append(map);
-      }
-
-      if (mapPlan.measured.length < 4) {
-        const note = document.createElement("div");
-        note.className = "calibration-status";
-        note.textContent =
-          "Sample at least four flaps spread around the drum for a reliable map.";
-        summary.append(note);
-      }
-      if (!calibration.homeVerified) {
-        const note = document.createElement("div");
-        note.className = "calibration-status error";
-        note.textContent =
-          "Confirm Home shows flap #0 before applying map entries.";
-        summary.append(note);
-      }
-    }
-    wrapper.append(summary);
-
-    const actions = document.createElement("div");
-    actions.className = "calibration-actions";
-
-    const applyMapButton = document.createElement("button");
-    applyMapButton.type = "button";
-    applyMapButton.className = "btn btn-primary";
-    applyMapButton.textContent = "Apply position map";
-    applyMapButton.disabled =
-      !mapPlan ||
-      !dataReady ||
-      mapPlan.entryCount === 0 ||
-      !calibration.homeVerified;
-    applyMapButton.addEventListener("click", async () => {
-      if (!mapPlan || !dataReady || mapPlan.entryCount === 0) return;
-
-      const payload = {
-        action: "apply",
-        module_id: Number(calibration.moduleId),
-        positions: mapPlan.mapPositions,
-      };
-
-      this._setCalibrationMessage("Writing position map...");
-      try {
-        await this._callCalibrationService(payload);
-        calibration.samples = [];
-        calibration.actualIndex = null;
-        calibration.message =
-          "Position map applied. Re-send the display text to restore the board, then spot-check a few flaps.";
-        calibration.messageError = false;
-        this._calibrationMessageNode = undefined;
-        this._detailsSignature = "";
-        this.render();
-      } catch (err) {
-        console.error("[splitflap-card] Position map apply failed:", err);
-        this._setCalibrationMessage(
-          "Could not apply the position map. Check the Home Assistant log.",
-          true
-        );
-      }
-    });
 
     const clearMapButton = document.createElement("button");
     clearMapButton.type = "button";
@@ -3128,12 +2692,7 @@ class SplitFlapCard extends HTMLElement {
           action: "clear_map",
           module_id: Number(calibration.moduleId),
         });
-        calibration.samples = [];
-        calibration.actualIndex = null;
-        calibration.message = "Position map cleared.";
-        calibration.messageError = false;
-        this._detailsSignature = "";
-        this.render();
+        this._setCalibrationMessage("Position map cleared.");
       } catch (err) {
         console.error("[splitflap-card] Clear map failed:", err);
         this._setCalibrationMessage("Could not clear the position map.", true);
@@ -3160,19 +2719,6 @@ class SplitFlapCard extends HTMLElement {
       }
     });
 
-    const resetButton = document.createElement("button");
-    resetButton.type = "button";
-    resetButton.className = "btn btn-secondary";
-    resetButton.textContent = "Reset samples";
-    resetButton.addEventListener("click", () => {
-      calibration.samples = [];
-      calibration.actualIndex = null;
-      calibration.message = "Samples cleared.";
-      calibration.messageError = false;
-      this._detailsSignature = "";
-      this.render();
-    });
-
     const closeButton = document.createElement("button");
     closeButton.type = "button";
     closeButton.className = "btn btn-secondary";
@@ -3184,16 +2730,47 @@ class SplitFlapCard extends HTMLElement {
       this.render();
     });
 
-    actions.append(
-      applyMapButton,
-      clearMapButton,
-      refreshButton,
-      resetButton,
-      closeButton
-    );
+    actions.append(homeButton, clearMapButton, refreshButton, closeButton);
     wrapper.append(actions);
     body.append(wrapper);
   }
+
+  _calibrationMapEntries(value) {
+    const entries = [];
+    const put = (index, position) => {
+      const entryIndex = Number.parseInt(index, 10);
+      const entryPosition = Number(position);
+      if (!Number.isInteger(entryIndex) || entryIndex < 0) return;
+      if (!Number.isFinite(entryPosition)) return;
+      entries.push([entryIndex, entryPosition]);
+    };
+
+    if (typeof value === "string" && value) {
+      for (const part of value.split(",")) {
+        const separator = part.indexOf("=");
+        if (separator < 0) continue;
+        put(part.slice(0, separator), part.slice(separator + 1));
+      }
+    } else if (Array.isArray(value)) {
+      value.forEach((entry, fallbackIndex) => {
+        if (entry && typeof entry === "object") {
+          put(
+            entry.index ?? fallbackIndex,
+            entry.position ?? entry.pos ?? entry.step
+          );
+        } else {
+          put(fallbackIndex, entry);
+        }
+      });
+    } else if (value && typeof value === "object") {
+      for (const [index, position] of Object.entries(value)) {
+        put(index, position);
+      }
+    }
+
+    return entries.sort((a, b) => a[0] - b[0]);
+  }
+
   _openMoreInfo(entityId) {
     this.dispatchEvent(
       new CustomEvent("hass-more-info", {

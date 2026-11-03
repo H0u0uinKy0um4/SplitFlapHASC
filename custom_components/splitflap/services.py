@@ -33,7 +33,15 @@ ATTR_POSITIONS = "positions"
 ATTR_STEPS = "steps"
 ATTR_CLEAR_MAP = "clear_map"
 
-CALIBRATION_ACTIONS = ("goto", "home", "apply", "clear_map", "refresh", "step")
+CALIBRATION_ACTIONS = (
+    "goto",
+    "home",
+    "record",
+    "apply",
+    "clear_map",
+    "refresh",
+    "step",
+)
 
 POSITIONS_SCHEMA = vol.Schema(
     {
