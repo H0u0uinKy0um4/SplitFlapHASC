@@ -8,7 +8,7 @@
  * dialog, but the card works without per-module entities.
  */
 
-const SPLITFLAP_CARD_VERSION = "1.6.7";
+const SPLITFLAP_CARD_VERSION = "1.6.8";
 const MODULE_ID_ATTR = "splitflap_module_id";
 const MODULE_PREFIX_ATTR = "splitflap_prefix";
 const LAYOUT_STORAGE_PREFIX = "splitflap-card-layout:";
@@ -1279,6 +1279,23 @@ class SplitFlapCard extends HTMLElement {
         .bct-skip {
           font-size: 0.75em;
         }
+        .bct-step-amt {
+          font-size: 0.75em;
+          padding: 2px 4px;
+          border-radius: 4px;
+          border: 1px solid var(--divider-color, #383842);
+          background: var(--card-background-color, #1c1c22);
+          color: inherit;
+        }
+        .bct-try {
+          font-size: 0.8em;
+          padding: 3px 10px;
+          margin-top: 2px;
+        }
+        .bct-controls button {
+          font-size: 0.75em;
+          padding: 3px 8px;
+        }
         .board-calibration-progress {
           text-align: center;
           font-weight: 600;
@@ -2077,19 +2094,40 @@ class SplitFlapCard extends HTMLElement {
 
         const stepControls = document.createElement("div");
         stepControls.className = "bct-controls bct-step";
-        for (const amt of [1, 10, 100]) {
-          const sl = document.createElement("button");
-          sl.textContent = `◀${amt}`;
-          const sr = document.createElement("button");
-          sr.textContent = `${amt}▶`;
-          sl.addEventListener("click", () => this._boardNudge(m.id, 0, -amt));
-          sr.addEventListener("click", () => this._boardNudge(m.id, 0, +amt));
-          stepControls.append(sl, sr);
+        const stepAmt = document.createElement("select");
+        stepAmt.className = "bct-step-amt";
+        for (const amt of [1, 10, 50]) {
+          const opt = document.createElement("option");
+          opt.value = String(amt);
+          opt.textContent = `${amt}`;
+          stepAmt.append(opt);
         }
+        stepAmt.value = "10";
+        const stepLeft = document.createElement("button");
+        stepLeft.textContent = "◀";
+        const stepRight = document.createElement("button");
+        stepRight.textContent = "▶";
+        stepLeft.addEventListener("click", () =>
+          this._boardNudge(m.id, 0, -Number(stepAmt.value))
+        );
+        stepRight.addEventListener("click", () =>
+          this._boardNudge(m.id, 0, +Number(stepAmt.value))
+        );
 
+        const tryBtn = document.createElement("button");
+        tryBtn.className = "btn btn-secondary bct-try";
+        tryBtn.textContent = "Try";
+        tryBtn.addEventListener("click", () => this._boardTry(m.id));
 
+        const recordBtn = document.createElement("button");
+        recordBtn.className = "btn btn-secondary bct-try";
+        recordBtn.textContent = isRecorded ? "✓ Recorded" : "Record";
+        recordBtn.disabled = busy || positionKnown === false;
+        recordBtn.addEventListener("click", () => this._boardRecord(m.id));
+
+        stepControls.append(stepLeft, stepAmt, stepRight);
         flapControls.append(flapLeft, flapRight);
-        tile.append(idSpan, refChar, counter, flapControls, stepControls);
+        tile.append(idSpan, refChar, counter, flapControls, stepControls, tryBtn, recordBtn);
 
         grid.append(tile);
       }
@@ -2140,6 +2178,37 @@ class SplitFlapCard extends HTMLElement {
     } catch (err) {
       console.error("[splitflap-card] board nudge failed:", err);
       bc.message = `Could not nudge module ${moduleId}`;
+      bc.messageError = true;
+    }
+    this._renderBoardCalibration();
+  }
+
+  async _boardTry(moduleId) {
+    // Send the currently pending step position to the hardware without recording it.
+    if (!this._boardCalibration || !this._hass) return;
+    const bc = this._boardCalibration;
+    const modules = this._boardModules();
+    const m = modules.find((x) => String(x.id) === String(moduleId));
+    if (!m) return;
+    const attrs = this._boardModuleAttrs(m);
+    const totalSteps = Number(this._firstValue(attrs, MODULE_STAT_ALIASES.total_steps)) || 4096;
+    const cur = bc.currentStep && bc.currentStep[moduleId] !== undefined
+      ? bc.currentStep[moduleId]
+      : Math.round((bc.referenceIndex || 0) * (totalSteps / 64));
+    const target = ((cur % totalSteps) + totalSteps) % totalSteps;
+    bc.message = `Sending module ${moduleId} to step ${target}...`;
+    bc.messageError = false;
+    this._renderBoardCalibration();
+    try {
+      await this._hass.callService("splitflap", "calibrate", {
+        action: "step",
+        module_id: Number(moduleId),
+        steps: target,
+      });
+      bc.message = `Module ${moduleId} moving to step ${target}.`;
+    } catch (err) {
+      console.error("[splitflap-card] board try failed:", err);
+      bc.message = `Could not move module ${moduleId}.`;
       bc.messageError = true;
     }
     this._renderBoardCalibration();
