@@ -2516,14 +2516,12 @@ class SplitFlapCard extends HTMLElement {
     stateBox.className = "calibration-summary";
     const displayPos = calibration.pendingStep[selected.id];
     const shownPos = Number.isFinite(displayPos) ? displayPos : (currentStep === null || currentStep === undefined ? null : currentStep);
-    const posWithOffset = (shownPos !== null && Number.isFinite(homeOffset)) ? (shownPos + homeOffset) % (dataReady && totalSteps > 0 ? totalSteps : 4096) : null;
     const stateParts = [
       `pos ${shownPos === null ? "—" : shownPos}`,
-      posWithOffset !== null ? `pos+off ${posWithOffset}` : null,
       `steps/rev ${dataReady ? totalSteps : "—"}`,
       `home offset ${Number.isFinite(homeOffset) ? homeOffset : "—"}`,
       busy ? "moving" : "idle",
-    ].filter(Boolean);
+    ];
     if (positionKnown === false) stateParts.push("position unknown");
     stateBox.textContent = stateParts.join(" · ");
     wrapper.append(stateBox);
