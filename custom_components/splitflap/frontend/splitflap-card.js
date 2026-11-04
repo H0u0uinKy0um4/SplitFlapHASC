@@ -8,7 +8,7 @@
  * dialog, but the card works without per-module entities.
  */
 
-const SPLITFLAP_CARD_VERSION = "1.6.6";
+const SPLITFLAP_CARD_VERSION = "1.6.7";
 const MODULE_ID_ATTR = "splitflap_module_id";
 const MODULE_PREFIX_ATTR = "splitflap_prefix";
 const LAYOUT_STORAGE_PREFIX = "splitflap-card-layout:";
