@@ -1841,9 +1841,11 @@ class SplitFlapCard extends HTMLElement {
     const modulesState = this._config.modules_sensor
       ? this._hass.states[this._config.modules_sensor]
       : null;
-    const statusState = this._config.status_sensor
-      ? this._hass.states[this._config.status_sensor]
-      : null;
+    const statusState = this._config.status_entity
+      ? this._hass.states[this._config.status_entity]
+      : this._config.status_sensor
+        ? this._hass.states[this._config.status_sensor]
+        : null;
     return this._collectModules(modulesState, statusState);
   }
 
@@ -2319,7 +2321,22 @@ class SplitFlapCard extends HTMLElement {
   }
 
   async _runCalibrationGoto(index) {
-    if (!this._calibration) return;
+    if (!this._calibration || !this._hass) return;
+    const moduleIdStr = String(this._calibration.moduleId);
+    const module = this._boardModules().find(
+      (candidate) => String(candidate.id) === moduleIdStr
+    );
+    if (module) {
+      const attrs = this._boardModuleAttrs(module);
+      const busy = Boolean(this._firstValue(attrs, MODULE_STAT_ALIASES.busy));
+      if (busy) {
+        this._setCalibrationMessage(
+          "Module is moving. Wait for it to stop before moving to a flap.",
+          true
+        );
+        return;
+      }
+    }
     const moduleId = Number(this._calibration.moduleId);
     this._setCalibrationMessage(`Moving to flap #${index}...`);
 
@@ -2387,6 +2404,15 @@ class SplitFlapCard extends HTMLElement {
     if (!module) return;
 
     const attrs = this._boardModuleAttrs(module);
+    const busy = Boolean(this._firstValue(attrs, MODULE_STAT_ALIASES.busy));
+    if (busy) {
+      this._setCalibrationMessage(
+        "Module is moving. Wait for it to stop before nudging.",
+        true
+      );
+      return;
+    }
+
     const rawKnown = this._firstValue(
       attrs,
       MODULE_STAT_ALIASES.position_known
@@ -2561,6 +2587,7 @@ class SplitFlapCard extends HTMLElement {
     gotoButton.type = "button";
     gotoButton.className = "btn btn-secondary";
     gotoButton.textContent = "Go to flap";
+    gotoButton.disabled = busy || positionKnown === false || currentStep === null;
     gotoButton.addEventListener("click", () =>
       this._runCalibrationGoto(Number(calibration.gotoIndex ?? 0))
     );
@@ -2570,10 +2597,13 @@ class SplitFlapCard extends HTMLElement {
     // Nudge by whole flaps and by raw steps.
     const flapRow = document.createElement("div");
     flapRow.className = "calibration-row";
+    const nudgeDisabled =
+      busy || positionKnown === false || currentStep === null || !dataReady;
     const flapLeft = document.createElement("button");
     flapLeft.type = "button";
     flapLeft.className = "btn btn-secondary";
     flapLeft.textContent = "◀ 1 flap";
+    flapLeft.disabled = nudgeDisabled;
     flapLeft.addEventListener("click", () =>
       this._nudgeCalibration(-Math.round(stepPerFlap))
     );
@@ -2581,12 +2611,14 @@ class SplitFlapCard extends HTMLElement {
     flapRight.type = "button";
     flapRight.className = "btn btn-secondary";
     flapRight.textContent = "1 flap ▶";
+    flapRight.disabled = nudgeDisabled;
     flapRight.addEventListener("click", () =>
       this._nudgeCalibration(Math.round(stepPerFlap))
     );
 
     const stepAmount = document.createElement("select");
     stepAmount.className = "calibration-select";
+    stepAmount.disabled = nudgeDisabled;
     for (const amount of [1, 10, 50]) {
       const option = document.createElement("option");
       option.value = String(amount);
@@ -2602,6 +2634,7 @@ class SplitFlapCard extends HTMLElement {
     stepLeft.type = "button";
     stepLeft.className = "btn btn-secondary";
     stepLeft.textContent = "◀";
+    stepLeft.disabled = nudgeDisabled;
     stepLeft.addEventListener("click", () =>
       this._nudgeCalibration(-(Number(stepAmount.value) || 10))
     );
@@ -2609,6 +2642,7 @@ class SplitFlapCard extends HTMLElement {
     stepRight.type = "button";
     stepRight.className = "btn btn-secondary";
     stepRight.textContent = "▶";
+    stepRight.disabled = nudgeDisabled;
     stepRight.addEventListener("click", () =>
       this._nudgeCalibration(Number(stepAmount.value) || 10)
     );
