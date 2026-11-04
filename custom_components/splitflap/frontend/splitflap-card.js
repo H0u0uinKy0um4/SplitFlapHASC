@@ -2508,14 +2508,22 @@ class SplitFlapCard extends HTMLElement {
     if (calibration.currentStep[selected.id] !== undefined && calibration.currentStep[selected.id] !== null) {
       currentStep = calibration.currentStep[selected.id];
     }
+    if (!calibration.pendingStep) calibration.pendingStep = {};
+    if (calibration.pendingStep[selected.id] === undefined || calibration.pendingStep[selected.id] === null) {
+      calibration.pendingStep[selected.id] = Number.isFinite(currentStep) ? currentStep : 0;
+    }
     const stateBox = document.createElement("div");
     stateBox.className = "calibration-summary";
+    const displayPos = calibration.pendingStep[selected.id];
+    const shownPos = Number.isFinite(displayPos) ? displayPos : (currentStep === null || currentStep === undefined ? null : currentStep);
+    const posWithOffset = (shownPos !== null && Number.isFinite(homeOffset)) ? (shownPos + homeOffset) % (dataReady && totalSteps > 0 ? totalSteps : 4096) : null;
     const stateParts = [
-      `pos ${currentStep === null || currentStep === undefined ? "—" : currentStep}`,
+      `pos ${shownPos === null ? "—" : shownPos}`,
+      posWithOffset !== null ? `pos+off ${posWithOffset}` : null,
       `steps/rev ${dataReady ? totalSteps : "—"}`,
       `home offset ${Number.isFinite(homeOffset) ? homeOffset : "—"}`,
       busy ? "moving" : "idle",
-    ];
+    ].filter(Boolean);
     if (positionKnown === false) stateParts.push("position unknown");
     stateBox.textContent = stateParts.join(" · ");
     wrapper.append(stateBox);
@@ -2552,22 +2560,31 @@ class SplitFlapCard extends HTMLElement {
     const flapRow = document.createElement("div");
     flapRow.className = "calibration-row";
     const nudgeDisabled = false;
+    if (!calibration.pendingStep) calibration.pendingStep = {};
+    if (calibration.pendingStep[selected.id] === undefined || calibration.pendingStep[selected.id] === null) {
+      calibration.pendingStep[selected.id] = Number.isFinite(currentStep) ? currentStep : 0;
+    }
+    const adjustPending = (delta) => {
+      if (!dataReady) return;
+      const total = totalSteps;
+      let cur = Number(calibration.pendingStep[selected.id]);
+      if (!Number.isFinite(cur)) cur = Number.isFinite(currentStep) ? currentStep : 0;
+      calibration.pendingStep[selected.id] = normalizeStepPosition(cur + delta, total);
+      this._setCalibrationMessage(`Set position to ${calibration.pendingStep[selected.id]}`);
+      this.render();
+    };
     const flapLeft = document.createElement("button");
     flapLeft.type = "button";
     flapLeft.className = "btn btn-secondary";
     flapLeft.textContent = "◀ 1 flap";
     flapLeft.disabled = nudgeDisabled;
-    flapLeft.addEventListener("click", () =>
-      this._nudgeCalibration(-Math.round(stepPerFlap))
-    );
+    flapLeft.addEventListener("click", () => adjustPending(-Math.round(stepPerFlap)));
     const flapRight = document.createElement("button");
     flapRight.type = "button";
     flapRight.className = "btn btn-secondary";
     flapRight.textContent = "1 flap ▶";
     flapRight.disabled = nudgeDisabled;
-    flapRight.addEventListener("click", () =>
-      this._nudgeCalibration(Math.round(stepPerFlap))
-    );
+    flapRight.addEventListener("click", () => adjustPending(Math.round(stepPerFlap)));
 
     const stepAmount = document.createElement("select");
     stepAmount.className = "calibration-select";
@@ -2588,20 +2605,42 @@ class SplitFlapCard extends HTMLElement {
     stepLeft.className = "btn btn-secondary";
     stepLeft.textContent = "◀";
     stepLeft.disabled = nudgeDisabled;
-    stepLeft.addEventListener("click", () =>
-      this._nudgeCalibration(-(Number(stepAmount.value) || 10))
-    );
+    stepLeft.addEventListener("click", () => adjustPending(-(Number(stepAmount.value) || 10)));
     const stepRight = document.createElement("button");
     stepRight.type = "button";
     stepRight.className = "btn btn-secondary";
     stepRight.textContent = "▶";
     stepRight.disabled = nudgeDisabled;
-    stepRight.addEventListener("click", () =>
-      this._nudgeCalibration(Number(stepAmount.value) || 10)
-    );
+    stepRight.addEventListener("click", () => adjustPending(Number(stepAmount.value) || 10));
 
     flapRow.append(flapLeft, flapRight, stepAmount, stepLeft, stepRight);
     wrapper.append(flapRow);
+
+    const tryRow = document.createElement("div");
+    tryRow.className = "calibration-row";
+    const tryBtn = document.createElement("button");
+    tryBtn.type = "button";
+    tryBtn.className = "btn btn-secondary";
+    tryBtn.textContent = "Try";
+    tryBtn.addEventListener("click", async () => {
+      if (!this._calibration || !this._hass) return;
+      const pid = Number(this._calibration.moduleId);
+      const ppos = Number(this._calibration.pendingStep?.[pid]);
+      if (!Number.isFinite(ppos)) return;
+      this._setCalibrationMessage(`Trying pos ${ppos}...`);
+      try {
+        await this._callCalibrationService({ action: "step", module_id: pid, steps: ppos });
+        if (!this._calibration.currentStep) this._calibration.currentStep = {};
+        this._calibration.currentStep[pid] = ppos;
+        this._setCalibrationMessage(`Moved to pos ${ppos}`);
+        this.render();
+      } catch (e) {
+        console.error(e);
+        this._setCalibrationMessage("Try failed", true);
+      }
+    });
+    tryRow.append(tryBtn);
+    wrapper.append(tryRow);
 
     // Record the live position as a flap index.
     const recordRow = document.createElement("div");
@@ -2619,9 +2658,20 @@ class SplitFlapCard extends HTMLElement {
     recordButton.className = "btn btn-primary";
     recordButton.textContent = "Record";
     recordButton.disabled = false;
-    recordButton.addEventListener("click", () =>
-      this._recordCalibrationIndex(Number(calibration.recordIndex ?? 0))
-    );
+    recordButton.addEventListener("click", async () => {
+      // Try to move to pending position first if different
+      const pid = Number(calibration.moduleId);
+      if (calibration.pendingStep && Number.isFinite(Number(calibration.pendingStep[pid])) && dataReady) {
+        try {
+          await this._callCalibrationService({ action: "step", module_id: pid, steps: Number(calibration.pendingStep[pid]) });
+          if (!calibration.currentStep) calibration.currentStep = {};
+          calibration.currentStep[pid] = Number(calibration.pendingStep[pid]);
+        } catch (e) {
+          console.error(e);
+        }
+      }
+      this._recordCalibrationIndex(Number(calibration.recordIndex ?? 0));
+    });
     recordRow.append(recordSelect, recordButton);
     wrapper.append(recordRow);
 
