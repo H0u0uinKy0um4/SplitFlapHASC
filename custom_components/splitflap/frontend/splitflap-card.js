@@ -2278,10 +2278,9 @@ class SplitFlapCard extends HTMLElement {
       const busy = Boolean(this._firstValue(attrs, MODULE_STAT_ALIASES.busy));
       if (busy) {
         this._setCalibrationMessage(
-          "Module is moving. Wait for it to stop before moving to a flap.",
-          true
+          "Module is moving. Sending command anyway...",
+          false
         );
-        return;
       }
     }
     const moduleId = Number(this._calibration.moduleId);
@@ -2294,7 +2293,7 @@ class SplitFlapCard extends HTMLElement {
         index,
       });
       this._setCalibrationMessage(
-        `Move to flap #${index} requested. Wait for the reel to stop, then nudge until centred and record the current position.`
+        `Move to flap #${index} requested.`
       );
     } catch (err) {
       console.error("[splitflap-card] Calibration goto failed:", err);
@@ -2354,10 +2353,9 @@ class SplitFlapCard extends HTMLElement {
     const busy = Boolean(this._firstValue(attrs, MODULE_STAT_ALIASES.busy));
     if (busy) {
       this._setCalibrationMessage(
-        "Module is moving. Wait for it to stop before nudging.",
-        true
+        "Module is moving. Nudging anyway...",
+        false
       );
-      return;
     }
 
     const rawKnown = this._firstValue(
@@ -2366,26 +2364,31 @@ class SplitFlapCard extends HTMLElement {
     );
     if (rawKnown !== undefined && rawKnown !== null && !Boolean(rawKnown)) {
       this._setCalibrationMessage(
-        "The module does not know its position. Home it first.",
-        true
+        "The module does not know its position. Nudging anyway...",
+        false
       );
-      return;
     }
 
-    const currentStep = Number(
+    let currentStep = Number(
       this._firstValue(attrs, MODULE_STAT_ALIASES.current_step)
     );
     if (!Number.isFinite(currentStep)) {
-      this._setCalibrationMessage(
-        "The module has not reported a position yet.",
-        true
-      );
-      return;
+      if (!this._calibration.currentStep) this._calibration.currentStep = {};
+      if (Number.isFinite(Number(this._calibration.currentStep[moduleId]))) {
+        currentStep = Number(this._calibration.currentStep[moduleId]);
+      } else {
+        currentStep = 0;
+      }
     }
 
     const totalSteps =
       Number(this._firstValue(attrs, MODULE_STAT_ALIASES.total_steps)) || 4096;
-    const target = normalizeStepPosition(currentStep + stepDelta, totalSteps);
+    if (!this._calibration.currentStep) this._calibration.currentStep = {};
+    this._calibration.currentStep[moduleId] = normalizeStepPosition(
+      currentStep + stepDelta,
+      totalSteps
+    );
+    const target = this._calibration.currentStep[moduleId];
     this._setCalibrationMessage(`Nudging to pos ${target}...`);
     try {
       await this._callCalibrationService({
@@ -2393,6 +2396,7 @@ class SplitFlapCard extends HTMLElement {
         module_id: Number(moduleId),
         steps: target,
       });
+      this.render();
     } catch (err) {
       console.error("[splitflap-card] Calibration nudge failed:", err);
       this._setCalibrationMessage("Could not nudge the module.", true);
@@ -2500,16 +2504,19 @@ class SplitFlapCard extends HTMLElement {
 
     // Live state straight from the slave. No coordinate math here: pos is
     // measured from the hall edge and is exactly what `record` stores.
+    if (!calibration.currentStep) calibration.currentStep = {};
+    if (calibration.currentStep[selected.id] !== undefined && calibration.currentStep[selected.id] !== null) {
+      currentStep = calibration.currentStep[selected.id];
+    }
     const stateBox = document.createElement("div");
     stateBox.className = "calibration-summary";
     const stateParts = [
-      `pos ${currentStep === null ? "—" : currentStep}`,
+      `pos ${currentStep === null || currentStep === undefined ? "—" : currentStep}`,
       `steps/rev ${dataReady ? totalSteps : "—"}`,
       `home offset ${Number.isFinite(homeOffset) ? homeOffset : "—"}`,
       busy ? "moving" : "idle",
     ];
     if (positionKnown === false) stateParts.push("position unknown");
-    if (positionKnown === null) stateParts.push("waiting for state");
     stateBox.textContent = stateParts.join(" · ");
     wrapper.append(stateBox);
 
@@ -2544,8 +2551,7 @@ class SplitFlapCard extends HTMLElement {
     // Nudge by whole flaps and by raw steps.
     const flapRow = document.createElement("div");
     flapRow.className = "calibration-row";
-    const nudgeDisabled =
-      busy || positionKnown === false || currentStep === null || !dataReady;
+    const nudgeDisabled = false;
     const flapLeft = document.createElement("button");
     flapLeft.type = "button";
     flapLeft.className = "btn btn-secondary";
@@ -2612,8 +2618,7 @@ class SplitFlapCard extends HTMLElement {
     recordButton.type = "button";
     recordButton.className = "btn btn-primary";
     recordButton.textContent = "Record";
-    recordButton.disabled =
-      busy || positionKnown === false || currentStep === null;
+    recordButton.disabled = false;
     recordButton.addEventListener("click", () =>
       this._recordCalibrationIndex(Number(calibration.recordIndex ?? 0))
     );
