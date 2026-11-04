@@ -1796,6 +1796,16 @@ class SplitFlapCard extends HTMLElement {
       this._closeBoardCalibration();
       return;
     }
+    const modules = this._boardModules();
+    const initialCurrentStep = {};
+    for (const m of modules) {
+      const attrs = this._boardModuleAttrs(m);
+      const rawStep = this._firstValue(attrs, MODULE_STAT_ALIASES.current_step);
+      const parsedStep = Number(rawStep);
+      if (Number.isFinite(parsedStep)) {
+        initialCurrentStep[m.id] = parsedStep;
+      }
+    }
     this._boardCalibration = {
       active: true,
       mode: "home",
@@ -1803,6 +1813,7 @@ class SplitFlapCard extends HTMLElement {
       sequence: [0],
       seqPos: 0,
       recorded: {},
+      currentStep: initialCurrentStep,
       message:
         "Home pass: nudge each module until flap 0 (space) is centred, then press Record all.",
       messageError: false,
@@ -2001,10 +2012,14 @@ class SplitFlapCard extends HTMLElement {
       let total = 0;
       for (const m of modules) {
         total += 1;
+        if (!bc.currentStep) bc.currentStep = {};
         const attrs = this._boardModuleAttrs(m);
         const rawStep = this._firstValue(attrs, MODULE_STAT_ALIASES.current_step);
         const parsedStep = Number(rawStep);
-        const currentStep = Number.isFinite(parsedStep) ? parsedStep : null;
+        let currentStep = Number.isFinite(parsedStep) ? parsedStep : null;
+        if (bc.currentStep[m.id] !== undefined && bc.currentStep[m.id] !== null) {
+          currentStep = bc.currentStep[m.id];
+        }
         const rawKnown = this._firstValue(
           attrs,
           MODULE_STAT_ALIASES.position_known
@@ -2031,12 +2046,12 @@ class SplitFlapCard extends HTMLElement {
 
         const counter = document.createElement("span");
         counter.className = "bct-counter";
-        if (busy) {
+        if (busy && positionKnown !== null) {
           counter.textContent = "moving…";
         } else if (positionKnown === false) {
           counter.textContent = "position unknown";
-        } else if (currentStep === null) {
-          counter.textContent = positionKnown === null ? "ready" : "no state yet";
+        } else if (currentStep === null || currentStep === undefined) {
+          counter.textContent = "ready";
         } else {
           counter.textContent = `pos ${currentStep}`;
         }
@@ -2094,8 +2109,12 @@ class SplitFlapCard extends HTMLElement {
     const totalSteps = Number(this._firstValue(attrs, MODULE_STAT_ALIASES.total_steps)) || 4096;
     const stepPerFlap = totalSteps / 64;
 
-    const cur = bc.currentStep[moduleId] !== undefined ? bc.currentStep[moduleId] : Math.round(bc.referenceIndex * stepPerFlap);
-    const delta = Math.round(flapDelta * stepPerFlap + stepDelta);
+    const cur =
+      bc.currentStep && bc.currentStep[moduleId] !== undefined
+        ? bc.currentStep[moduleId]
+        : Math.round((bc.referenceIndex || 0) * stepPerFlap);
+    if (!bc.currentStep) bc.currentStep = {};
+    const delta = Math.round((flapDelta || 0) * stepPerFlap + (stepDelta || 0));
     bc.currentStep[moduleId] = cur + delta;
 
     const finalTarget = ((bc.currentStep[moduleId] % totalSteps) + totalSteps) % totalSteps;
@@ -2106,10 +2125,14 @@ class SplitFlapCard extends HTMLElement {
         module_id: Number(moduleId),
         steps: finalTarget,
       });
+      bc.message = `Nudged module ${moduleId} to step ${finalTarget}`;
+      bc.messageError = false;
     } catch (err) {
       console.error("[splitflap-card] board nudge failed:", err);
-
+      bc.message = `Could not nudge module ${moduleId}`;
+      bc.messageError = true;
     }
+    this._renderBoardCalibration();
   }
 
   async _boardGoto(moduleId) {
