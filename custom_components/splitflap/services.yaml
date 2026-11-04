@@ -133,3 +133,35 @@ calibrate:
       required: false
       selector:
         boolean:
+
+get_position:
+  name: Get Position
+  description: >-
+    Request the current position from a specific module.
+  fields:
+    module_id:
+      name: Module ID
+      description: RS485 id of the module to query.
+      required: true
+      example: 3
+      selector:
+        number:
+          min: 1
+          max: 255
+          mode: box:
+
+getpos:
+  name: Get Position (short)
+  description: >-
+    Request the current position from a specific module.
+  fields:
+    module_id:
+      name: Module ID
+      description: RS485 id of the module to query.
+      required: true
+      example: 3
+      selector:
+        number:
+          min: 1
+          max: 255
+          mode: box:

@@ -20,6 +20,8 @@ SERVICE_SYNC = "sync"
 SERVICE_SCAN = "scan"
 SERVICE_UPDATE = "update"
 SERVICE_CALIBRATE = "calibrate"
+SERVICE_GET_POSITION = "get_position"
+SERVICE_GETPOS = "getpos"
 
 # Service parameters
 ATTR_TEXT = "text"
@@ -41,6 +43,9 @@ CALIBRATION_ACTIONS = (
     "clear_map",
     "refresh",
     "step",
+    "get_pos",
+    "getpos",
+    "get_position",
 )
 
 POSITIONS_SCHEMA = vol.Schema(
@@ -66,6 +71,14 @@ CALIBRATE_SCHEMA = vol.Schema(
         vol.Optional(ATTR_CLEAR_MAP, default=False): cv.boolean,
         vol.Optional(ATTR_STEPS): vol.All(
             vol.Coerce(int), vol.Range(min=0, max=65534)
+        ),
+    }
+)
+
+GET_POSITION_SCHEMA = vol.Schema(
+    {
+        vol.Required(ATTR_MODULE_ID): vol.All(
+            vol.Coerce(int), vol.Range(min=1, max=255)
         ),
     }
 )
@@ -141,6 +154,16 @@ async def handle_calibrate(call: ServiceCall, hass: HomeAssistant) -> None:
         )
 
 
+async def handle_get_position(call: ServiceCall, hass: HomeAssistant) -> None:
+    """Request current position from a module."""
+    module_id = call.data[ATTR_MODULE_ID]
+    for coordinator in get_coordinators(hass):
+        if hasattr(coordinator, "get_position"):
+            await coordinator.get_position(module_id=module_id)
+        else:
+            await coordinator.calibrate_module(module_id=module_id, action="get_pos")
+
+
 # =============================================================================
 # SERVICE REGISTRATION
 # Each service entry needs:
@@ -181,6 +204,16 @@ SERVICES: list[ServiceDefinition] = [
         name=SERVICE_CALIBRATE,
         handler=handle_calibrate,
         schema=CALIBRATE_SCHEMA,
+    ),
+    ServiceDefinition(
+        name=SERVICE_GET_POSITION,
+        handler=handle_get_position,
+        schema=GET_POSITION_SCHEMA,
+    ),
+    ServiceDefinition(
+        name=SERVICE_GETPOS,
+        handler=handle_get_position,
+        schema=GET_POSITION_SCHEMA,
     ),
 ]
 

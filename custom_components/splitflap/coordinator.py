@@ -712,11 +712,9 @@ class SplitFlapCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     async def send_text(self, text: str, start: int = 1) -> None:
         """Send an explicit character for every SplitFlap module.
 
-        The display command no longer contains a free-form string. It contains
-        one ``{"id": <module id>, "char": <character>}`` entry per module so the
-        ESP32 master can forward each character to the matching RS485 module.
-        Modules before ``start`` and modules beyond the text receive a space so
-        they show a blank flap.
+        The display command contains one ``{"id": <module id>, "char": <character>}``
+        entry per module so the ESP32 master can forward each character to the matching
+        RS485 module. Modules before ``start`` and modules beyond the text receive a space.
         """
         text = str(text)
         try:
@@ -793,6 +791,10 @@ class SplitFlapCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         await mqtt.async_publish(self.hass, topic, payload)
         _LOGGER.info("Requested update data %s", topic)
 
+    async def get_position(self, module_id: int | str) -> None:
+        """Request current position from a module."""
+        await self.calibrate_module(module_id=module_id, action="get_pos")
+
     async def calibrate_module(
         self,
         *,
@@ -828,22 +830,26 @@ class SplitFlapCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 ):
                     cleaned_positions[entry_index] = entry_position
 
+        action_norm = str(action).lower().strip().replace("-", "_")
+        if action_norm in ("getpos", "get_position", "get_pos", "position", "pos", "get"):
+            action_norm = "get_pos"
+
         payload: dict[str, Any] = {
-            "action": action,
+            "action": action_norm,
             "module": _module_payload_id(module_id),
         }
-        if action == "goto":
+        if action_norm == "goto":
             if index is not None:
                 payload["index"] = int(index)
             elif flap:
                 payload["flap"] = str(flap)[0]
-        elif action == "step":
+        elif action_norm == "step":
             if steps is not None:
                 payload["steps"] = int(steps)
-        elif action == "record":
+        elif action_norm == "record":
             if index is not None:
                 payload["index"] = int(index)
-        elif action == "apply":
+        elif action_norm == "apply":
             if home_offset is not None:
                 payload["home_offset"] = int(home_offset)
             if clear_map:
@@ -852,6 +858,8 @@ class SplitFlapCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 payload["positions"] = {
                     str(key): value for key, value in sorted(cleaned_positions.items())
                 }
+        elif action_norm == "get_pos":
+            pass
 
         topic = f"{self.prefix}/command/calibrate"
         await mqtt.async_publish(self.hass, topic, json.dumps(payload))

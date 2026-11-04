@@ -8,7 +8,7 @@
  * dialog, but the card works without per-module entities.
  */
 
-const SPLITFLAP_CARD_VERSION = "1.7.0";
+const SPLITFLAP_CARD_VERSION = "1.6.6";
 const MODULE_ID_ATTR = "splitflap_module_id";
 const MODULE_PREFIX_ATTR = "splitflap_prefix";
 const LAYOUT_STORAGE_PREFIX = "splitflap-card-layout:";
@@ -1279,23 +1279,6 @@ class SplitFlapCard extends HTMLElement {
         .bct-skip {
           font-size: 0.75em;
         }
-        .bct-step-amt {
-          font-size: 0.75em;
-          padding: 2px 4px;
-          border-radius: 4px;
-          border: 1px solid var(--divider-color, #383842);
-          background: var(--card-background-color, #1c1c22);
-          color: inherit;
-        }
-        .bct-try {
-          font-size: 0.8em;
-          padding: 3px 10px;
-          margin-top: 2px;
-        }
-        .bct-controls button {
-          font-size: 0.75em;
-          padding: 3px 8px;
-        }
         .board-calibration-progress {
           text-align: center;
           font-weight: 600;
@@ -2053,7 +2036,7 @@ class SplitFlapCard extends HTMLElement {
         } else if (positionKnown === false) {
           counter.textContent = "position unknown";
         } else if (currentStep === null) {
-          counter.textContent = "no state yet";
+          counter.textContent = positionKnown === null ? "ready" : "no state yet";
         } else {
           counter.textContent = `pos ${currentStep}`;
         }
@@ -2061,64 +2044,28 @@ class SplitFlapCard extends HTMLElement {
         const flapControls = document.createElement("div");
         flapControls.className = "bct-controls";
         const flapLeft = document.createElement("button");
-        flapLeft.textContent = "◀ 1 flap";
+        flapLeft.textContent = "◀ flap";
         const flapRight = document.createElement("button");
-        flapRight.textContent = "1 flap ▶";
+        flapRight.textContent = "flap ▶";
         flapLeft.addEventListener("click", () => this._boardNudge(m.id, -1, 0));
         flapRight.addEventListener("click", () => this._boardNudge(m.id, +1, 0));
 
         const stepControls = document.createElement("div");
         stepControls.className = "bct-controls bct-step";
-        const stepAmt = document.createElement("select");
-        stepAmt.className = "bct-step-amt";
-        for (const amt of [1, 10, 50]) {
-          const opt = document.createElement("option");
-          opt.value = String(amt);
-          opt.textContent = `${amt}`;
-          stepAmt.append(opt);
+        for (const amt of [1, 10, 100]) {
+          const sl = document.createElement("button");
+          sl.textContent = `◀${amt}`;
+          const sr = document.createElement("button");
+          sr.textContent = `${amt}▶`;
+          sl.addEventListener("click", () => this._boardNudge(m.id, 0, -amt));
+          sr.addEventListener("click", () => this._boardNudge(m.id, 0, +amt));
+          stepControls.append(sl, sr);
         }
-        stepAmt.value = "10";
-        const stepLeft = document.createElement("button");
-        stepLeft.textContent = "◀";
-        const stepRight = document.createElement("button");
-        stepRight.textContent = "▶";
-        stepLeft.addEventListener("click", () =>
-          this._boardNudge(m.id, 0, -Number(stepAmt.value))
-        );
-        stepRight.addEventListener("click", () =>
-          this._boardNudge(m.id, 0, +Number(stepAmt.value))
-        );
 
-        const goBtn = document.createElement("button");
-        goBtn.className = "btn btn-secondary bct-try";
-        goBtn.textContent = "Go to flap";
-        goBtn.addEventListener("click", () => this._boardGoto(m.id));
 
-        const recordBtn = document.createElement("button");
-        recordBtn.className = "btn btn-secondary bct-try";
-        recordBtn.textContent = isRecorded ? "Recorded" : "Record";
-        recordBtn.disabled = busy || positionKnown === false;
-        recordBtn.addEventListener("click", () => this._boardRecord(m.id));
-
-        // Absolute targets are computed from the last reported pos, so do not
-        // accept a second nudge until the module has stopped and re-reported.
-        flapLeft.disabled = busy;
-        flapRight.disabled = busy;
-        stepLeft.disabled = busy;
-        stepRight.disabled = busy;
-        goBtn.disabled = busy;
-
-        stepControls.append(stepLeft, stepAmt, stepRight);
         flapControls.append(flapLeft, flapRight);
-        tile.append(
-          idSpan,
-          refChar,
-          counter,
-          flapControls,
-          stepControls,
-          goBtn,
-          recordBtn
-        );
+        tile.append(idSpan, refChar, counter, flapControls, stepControls);
+
         grid.append(tile);
       }
       body.append(grid);
@@ -2135,7 +2082,8 @@ class SplitFlapCard extends HTMLElement {
     }
   }
 
-  async _boardNudge(moduleId, flapSteps, stepDelta) {
+
+  async _boardNudge(moduleId, flapDelta, stepDelta) {
     if (!this._boardCalibration || !this._hass) return;
     const bc = this._boardCalibration;
     const modules = this._boardModules();
@@ -2143,48 +2091,24 @@ class SplitFlapCard extends HTMLElement {
     if (!m) return;
 
     const attrs = this._boardModuleAttrs(m);
-    const rawKnown = this._firstValue(
-      attrs,
-      MODULE_STAT_ALIASES.position_known
-    );
-    if (rawKnown !== undefined && rawKnown !== null && !Boolean(rawKnown)) {
-      bc.message = `Module ${moduleId} does not know its position. Press Go to flap or Home first.`;
-      bc.messageError = true;
-      this._renderBoardCalibration();
-      return;
-    }
-
-    const currentStep = Number(
-      this._firstValue(attrs, MODULE_STAT_ALIASES.current_step)
-    );
-    if (!Number.isFinite(currentStep)) {
-      bc.message = `Module ${moduleId} has not reported a position yet.`;
-      bc.messageError = true;
-      this._renderBoardCalibration();
-      return;
-    }
-
-    const totalSteps =
-      Number(this._firstValue(attrs, MODULE_STAT_ALIASES.total_steps)) || 4096;
+    const totalSteps = Number(this._firstValue(attrs, MODULE_STAT_ALIASES.total_steps)) || 4096;
     const stepPerFlap = totalSteps / 64;
-    const delta = Math.round(flapSteps * stepPerFlap + stepDelta);
-    const target = normalizeStepPosition(currentStep + delta, totalSteps);
 
-    bc.message = `Moving module ${moduleId} to pos ${target}...`;
-    bc.messageError = false;
-    this._renderBoardCalibration();
+    const cur = bc.currentStep[moduleId] !== undefined ? bc.currentStep[moduleId] : Math.round(bc.referenceIndex * stepPerFlap);
+    const delta = Math.round(flapDelta * stepPerFlap + stepDelta);
+    bc.currentStep[moduleId] = cur + delta;
+
+    const finalTarget = ((bc.currentStep[moduleId] % totalSteps) + totalSteps) % totalSteps;
 
     try {
       await this._hass.callService("splitflap", "calibrate", {
         action: "step",
         module_id: Number(moduleId),
-        steps: target,
+        steps: finalTarget,
       });
     } catch (err) {
       console.error("[splitflap-card] board nudge failed:", err);
-      bc.message = `Could not move module ${moduleId}.`;
-      bc.messageError = true;
-      this._renderBoardCalibration();
+
     }
   }
 
