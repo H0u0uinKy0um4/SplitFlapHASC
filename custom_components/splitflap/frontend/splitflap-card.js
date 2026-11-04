@@ -1311,7 +1311,17 @@ class SplitFlapCard extends HTMLElement {
           display: flex;
           flex-wrap: wrap;
           align-items: flex-end;
+          align-content: flex-start;
           gap: 8px;
+        }
+        .calibration-row .btn,
+        .calibration-actions .btn {
+          flex: 0 1 auto;
+          min-width: 0;
+        }
+        .calibration-row .btn-secondary,
+        .calibration-row .btn-primary {
+          flex: 1 1 110px;
         }
         .calibration-field {
           display: flex;
