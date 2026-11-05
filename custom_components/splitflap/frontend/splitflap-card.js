@@ -8,7 +8,7 @@
  * dialog, but the card works without per-module entities.
  */
 
-const SPLITFLAP_CARD_VERSION = "1.6.8";
+const SPLITFLAP_CARD_VERSION = "1.6.9";
 const MODULE_ID_ATTR = "splitflap_module_id";
 const MODULE_PREFIX_ATTR = "splitflap_prefix";
 const LAYOUT_STORAGE_PREFIX = "splitflap-card-layout:";
@@ -2600,6 +2600,7 @@ class SplitFlapCard extends HTMLElement {
       `home offset ${Number.isFinite(homeOffset) ? homeOffset : "—"}`,
       busy ? "moving" : "idle",
     ];
+    // Suppress "position unknown" - we can still operate via pending position/Try/Record
     if (positionKnown === false) stateParts.push("position unknown");
     stateBox.textContent = stateParts.join(" · ");
     wrapper.append(stateBox);
