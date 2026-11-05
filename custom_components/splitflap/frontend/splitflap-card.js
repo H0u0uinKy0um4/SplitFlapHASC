@@ -2166,20 +2166,9 @@ class SplitFlapCard extends HTMLElement {
     bc.currentStep[moduleId] = cur + delta;
 
     const finalTarget = ((bc.currentStep[moduleId] % totalSteps) + totalSteps) % totalSteps;
-
-    try {
-      await this._hass.callService("splitflap", "calibrate", {
-        action: "step",
-        module_id: Number(moduleId),
-        steps: finalTarget,
-      });
-      bc.message = `Nudged module ${moduleId} to step ${finalTarget}`;
-      bc.messageError = false;
-    } catch (err) {
-      console.error("[splitflap-card] board nudge failed:", err);
-      bc.message = `Could not nudge module ${moduleId}`;
-      bc.messageError = true;
-    }
+    bc.currentStep[moduleId] = finalTarget;
+    bc.message = `Set module ${moduleId} to step ${finalTarget}`;
+    bc.messageError = false;
     this._renderBoardCalibration();
   }
 
@@ -2238,6 +2227,19 @@ class SplitFlapCard extends HTMLElement {
     if (!this._boardCalibration || !this._hass) return;
     const bc = this._boardCalibration;
     try {
+      // Move to pending position first (arrows set it, Try/Record applies it)
+      if (bc.currentStep && bc.currentStep[moduleId] !== undefined) {
+        const modules = this._boardModules();
+        const m = modules.find((x) => String(x.id) === String(moduleId));
+        const attrs = m ? this._boardModuleAttrs(m) : {};
+        const totalSteps = Number(this._firstValue(attrs, MODULE_STAT_ALIASES.total_steps)) || 4096;
+        const target = ((Number(bc.currentStep[moduleId]) % totalSteps) + totalSteps) % totalSteps;
+        await this._hass.callService("splitflap", "calibrate", {
+          action: "step",
+          module_id: Number(moduleId),
+          steps: target,
+        });
+      }
       await this._hass.callService("splitflap", "calibrate", {
         action: "record",
         module_id: Number(moduleId),
@@ -2270,20 +2272,17 @@ class SplitFlapCard extends HTMLElement {
     this._renderBoardCalibration();
 
     for (const m of modules) {
-      const attrs = this._boardModuleAttrs(m);
-      const rawKnown = this._firstValue(
-        attrs,
-        MODULE_STAT_ALIASES.position_known
-      );
-      const busy = Boolean(
-        this._firstValue(attrs, MODULE_STAT_ALIASES.busy)
-      );
-      if (busy || (rawKnown !== undefined && rawKnown !== null && !Boolean(rawKnown))) {
-        skipped += 1;
-        continue;
-      }
-
       try {
+        if (bc.currentStep && bc.currentStep[m.id] !== undefined) {
+          const attrs = this._boardModuleAttrs(m);
+          const totalSteps = Number(this._firstValue(attrs, MODULE_STAT_ALIASES.total_steps)) || 4096;
+          const target = ((Number(bc.currentStep[m.id]) % totalSteps) + totalSteps) % totalSteps;
+          await this._hass.callService("splitflap", "calibrate", {
+            action: "step",
+            module_id: Number(m.id),
+            steps: target,
+          });
+        }
         await this._hass.callService("splitflap", "calibrate", {
           action: "record",
           module_id: Number(m.id),
